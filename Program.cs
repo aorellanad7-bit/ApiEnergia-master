@@ -101,6 +101,42 @@ namespace ApiEnergia
                 app.MapOpenApi();
             }
 
+            // Middleware global de excepciones: garantiza que cualquier fallo no
+            // controlado se traduzca a un JSON 500 con `tipo`, `mensaje` y
+            // `innerMensaje`. Sin esto, IIS ASP.NET responde con cuerpo vacío y
+            // es imposible diagnosticar errores en producción.
+            app.Use(async (context, next) =>
+            {
+                try
+                {
+                    await next();
+                }
+                catch (Exception ex)
+                {
+                    var logger = context.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("UnhandledException");
+                    logger.LogError(ex, "Excepción no controlada en {Path}", context.Request.Path);
+
+                    if (!context.Response.HasStarted)
+                    {
+                        context.Response.Clear();
+                        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                        context.Response.ContentType = "application/json";
+
+                        var payload = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            error = "Excepción no controlada en la API de Energía.",
+                            tipo = ex.GetType().FullName,
+                            mensaje = ex.Message,
+                            innerMensaje = ex.InnerException?.Message,
+                            path = context.Request.Path.Value
+                        });
+                        await context.Response.WriteAsync(payload);
+                    }
+                }
+            });
+
             app.UseHttpsRedirection();
 
             // 7. Activar CORS — DEBE ir antes de Authentication/Authorization

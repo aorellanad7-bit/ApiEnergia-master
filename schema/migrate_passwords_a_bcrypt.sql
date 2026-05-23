@@ -20,6 +20,13 @@
 
 USE `api_energia`;
 
+-- MySQL Workbench arranca con safe-update-mode ON, lo que rechaza UPDATEs
+-- cuya WHERE no use una columna indexada. Aquí filtramos por `password_hash`
+-- (que no tiene índice y no debería tenerlo), así que desactivamos el modo
+-- durante la migración y lo restauramos al final.
+SET @sql_safe_updates_anterior := @@SQL_SAFE_UPDATES;
+SET SQL_SAFE_UPDATES = 0;
+
 -- ---- Hashes pre-calculados (BCrypt, work factor 11) ----
 -- 1234        => $2a$11$F0VoGP4BvubXPuMOMvTbV.ku6MVGymAqStq96YAvMiBFJjTtAJ792
 -- Admin123*   => $2a$11$lQpsLq1CE.OPfqvgySp.VOlhLoSIrqnCsHBfDEefJYIrCTBKKx3p.
@@ -55,3 +62,6 @@ SELECT
     END AS estado_password
 FROM `usuario_acceso_energia`
 ORDER BY `id_usuario`;
+
+-- Restaurar el modo safe updates al valor que tenía la sesión.
+SET SQL_SAFE_UPDATES = @sql_safe_updates_anterior;

@@ -22,6 +22,12 @@
 
 USE `api_energia`;
 
+-- MySQL Workbench arranca con safe-update-mode ON. Los UPDATE de este script
+-- filtran por columnas no indexadas (`estado`, etc.), así que desactivamos
+-- el modo durante la migración y lo restauramos al final.
+SET @sql_safe_updates_anterior := @@SQL_SAFE_UPDATES;
+SET SQL_SAFE_UPDATES = 0;
+
 -- ---------------------------------------------------------------------------
 -- 1. Renombrar cliente_luz.correo_electronico → correo (y ampliar a 150)
 -- ---------------------------------------------------------------------------
@@ -128,3 +134,6 @@ SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
      OR (TABLE_NAME = 'lectura_contador' AND COLUMN_NAME = 'fecha_lectura')
      OR (TABLE_NAME = 'recibo_luz'       AND COLUMN_NAME IN ('fecha_emision','estado')))
  ORDER BY TABLE_NAME, COLUMN_NAME;
+
+-- Restaurar el modo safe updates al valor que tenía la sesión.
+SET SQL_SAFE_UPDATES = @sql_safe_updates_anterior;
