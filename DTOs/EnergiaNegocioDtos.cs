@@ -8,17 +8,17 @@ namespace ApiEnergia.DTOs
     /// Notificación de pago que el Banco envía al endpoint público de Energía.
     /// </summary>
     public record NotificacionPagoBancoDto(
-        [property: Required, MaxLength(30)] string NumeroContador,
-        [property: Range(0.01, double.MaxValue)] decimal Monto,
-        [property: MaxLength(50)] string? ReferenciaBanco = null);
+        [Required, MaxLength(30)] string NumeroContador,
+        [Range(0.01, double.MaxValue)] decimal Monto,
+        [MaxLength(50)] string? ReferenciaBanco = null);
 
     public record PagoEfectivoAgenciaDto(
-        [property: Required, MaxLength(30)] string NumeroContador,
-        [property: Range(0.01, double.MaxValue)] decimal MontoRecibido);
+        [Required, MaxLength(30)] string NumeroContador,
+        [Range(0.01, double.MaxValue)] decimal MontoRecibido);
 
     public record RegistrarLecturaDto(
-        [property: Required, MaxLength(30)] string NumeroContador,
-        [property: Range(1, int.MaxValue)] int Kilovatios);
+        [Required, MaxLength(30)] string NumeroContador,
+        [Range(1, int.MaxValue)] int Kilovatios);
 
     /// <summary>
     /// Resultado consolidado del procesamiento de un pago externo (Banco) o interno (Agencia).

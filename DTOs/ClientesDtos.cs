@@ -3,11 +3,11 @@ using System.ComponentModel.DataAnnotations;
 namespace ApiEnergia.DTOs
 {
     public record CrearClienteConContadorRequest(
-        [property: Required, MaxLength(20)] string Dpi,
-        [property: Required, MaxLength(100)] string Nombre,
-        [property: Required, MaxLength(100)] string Apellido,
-        [property: Required, MaxLength(150), EmailAddress] string Correo,
-        [property: Required, MaxLength(255)] string DireccionInmueble);
+        [Required, MaxLength(20)] string Dpi,
+        [Required, MaxLength(100)] string Nombre,
+        [Required, MaxLength(100)] string Apellido,
+        [Required, MaxLength(150), EmailAddress] string Correo,
+        [Required, MaxLength(255)] string DireccionInmueble);
 
     public record CrearClienteConContadorResponse(string NumeroContador, string UsuarioAsignado, string PasswordTemporal);
 }
