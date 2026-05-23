@@ -49,5 +49,12 @@ namespace ApiEnergia.Interfaces
         /// información sensible.
         /// </summary>
         Task<IReadOnlyList<PagoResumenDto>?> ListarPagosDeReciboAsync(string dpi, int idRecibo);
+
+        /// <summary>
+        /// Verifica que el contador dado esté asignado al cliente con el DPI
+        /// indicado. Lo usa el portal antes de orquestar un pago para evitar
+        /// que un cliente cobre / pague un contador que no es suyo.
+        /// </summary>
+        Task<bool> ContadorPerteneceAClienteAsync(string dpi, string numeroContador);
     }
 }

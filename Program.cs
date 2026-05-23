@@ -65,6 +65,21 @@ namespace ApiEnergia
             builder.Services.AddScoped<IClientesService, ClientesService>();
             builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
+            // HttpClient con el que el portal del cliente orquesta el cobro contra
+            // el API Banco (endpoint POST api/Pagos/ejecutar). La URL del banco se
+            // configura con BancoApi:Url en appsettings; si no está, fallamos rápido
+            // en arranque para evitar errores opacos en producción.
+            var bancoApiUrl = builder.Configuration["BancoApi:Url"];
+            if (string.IsNullOrWhiteSpace(bancoApiUrl))
+                throw new InvalidOperationException(
+                    "Falta configurar BancoApi:Url en appsettings (URL base del API Banco).");
+
+            builder.Services.AddHttpClient("BancoApi", client =>
+            {
+                client.BaseAddress = new Uri(bancoApiUrl);
+                client.Timeout = TimeSpan.FromSeconds(30);
+            });
+
             // 5. Autenticación JWT (Específico de Energía para el Portal de Clientes)
             builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 .AddJwtBearer(options =>

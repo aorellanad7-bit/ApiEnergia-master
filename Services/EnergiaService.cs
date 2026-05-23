@@ -333,5 +333,18 @@ namespace ApiEnergia.Services
                     CodigoAutorizacionBanco: p.CodigoAutorizacionBanco))
                 .ToList();
         }
+
+        public async Task<bool> ContadorPerteneceAClienteAsync(string dpi, string numeroContador)
+        {
+            if (string.IsNullOrWhiteSpace(dpi) || string.IsNullOrWhiteSpace(numeroContador))
+                return false;
+
+            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            if (cliente is null) return false;
+
+            return (await _unitOfWork.Contadores
+                .FindAsync(c => c.IdCliente == cliente.IdCliente && c.NumeroContador == numeroContador))
+                .Any();
+        }
     }
 }
