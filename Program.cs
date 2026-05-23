@@ -16,10 +16,13 @@ namespace ApiEnergia
         {
             var builder = WebApplication.CreateBuilder(args);
 
-            // 1. Configurar CORS (Obligatorio para que Next.js o el Banco no sean bloqueados)
+            // 1. Configurar CORS — política abierta para que el Banco, otros servicios
+            //    y cualquier frontend (Next.js, HTML estático, Scalar, etc.) puedan
+            //    consumir esta API sin restricciones de origen.
+            const string corsPolicyName = "PermitirTodo";
             builder.Services.AddCors(options =>
             {
-                options.AddPolicy("NextJsPolicy", policy =>
+                options.AddPolicy(corsPolicyName, policy =>
                 {
                     policy.AllowAnyOrigin()
                           .AllowAnyHeader()
@@ -97,8 +100,9 @@ namespace ApiEnergia
 
             app.UseHttpsRedirection();
 
-            // 7. Activar CORS (Debe ir antes del Authentication/Authorization)
-            app.UseCors("NextJsPolicy");
+            // 7. Activar CORS — DEBE ir antes de Authentication/Authorization
+            //    para que las peticiones preflight (OPTIONS) no se bloqueen.
+            app.UseCors(corsPolicyName);
 
             // 8. Pipeline de Seguridad
             app.UseAuthentication();
