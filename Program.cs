@@ -1,3 +1,4 @@
+using ApiEnergia.Auth;
 using ApiEnergia.DbContext;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Repositories;
@@ -62,11 +63,9 @@ namespace ApiEnergia
             builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
             builder.Services.AddScoped<IEnergiaService, EnergiaService>();
             builder.Services.AddScoped<IClientesService, ClientesService>();
+            builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
-            // 5. Inyección de Servicios Externos (Integración HTTP para llamar al Banco)
-            builder.Services.AddHttpClient();
-
-            // 6. Autenticación JWT (Específico de Energía para el Portal de Clientes)
+            // 5. Autenticación JWT (Específico de Energía para el Portal de Clientes)
             builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 .AddJwtBearer(options =>
                 {
@@ -84,6 +83,10 @@ namespace ApiEnergia
                 });
 
             builder.Services.AddAuthorization();
+
+            // 6. Filtro de API key compartido (registrado por reflexión vía
+            //    [RequiereApiKey] sobre IntegracionBancariaController). Lee
+            //    Banco:ApiKey de IConfiguration en runtime.
 
             var app = builder.Build();
 
@@ -104,7 +107,8 @@ namespace ApiEnergia
             //    para que las peticiones preflight (OPTIONS) no se bloqueen.
             app.UseCors(corsPolicyName);
 
-            // 8. Pipeline de Seguridad
+            // 8. Pipeline de seguridad: JWT primero (para los endpoints con
+            //    [Authorize]), luego AuthorizationFilters (incluido [RequiereApiKey]).
             app.UseAuthentication();
             app.UseAuthorization();
 

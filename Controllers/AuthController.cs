@@ -1,5 +1,7 @@
+using ApiEnergia.Auth;
 using ApiEnergia.DTOs;
 using ApiEnergia.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
@@ -15,11 +17,16 @@ namespace ApiEnergia.Controllers
     {
         private readonly IUnitOfWork _unitOfWork;
         private readonly IConfiguration _configuration;
+        private readonly IPasswordHasher _passwordHasher;
 
-        public AuthController(IUnitOfWork unitOfWork, IConfiguration configuration)
+        public AuthController(
+            IUnitOfWork unitOfWork,
+            IConfiguration configuration,
+            IPasswordHasher passwordHasher)
         {
             _unitOfWork = unitOfWork;
             _configuration = configuration;
+            _passwordHasher = passwordHasher;
         }
 
         [HttpPost("login")]
@@ -29,11 +36,59 @@ namespace ApiEnergia.Controllers
         {
             var usuario = (await _unitOfWork.Accesos.FindAsync(u => u.NombreUsuario == request.Credencial))
                 .FirstOrDefault();
-            if (usuario is null || usuario.PasswordHash != request.Password)
+            if (usuario is null)
                 return Unauthorized(new { mensaje = "Credenciales inválidas." });
 
+            // Camino normal: hash BCrypt → verificar
+            if (_passwordHasher.EsHashBCrypt(usuario.PasswordHash))
+            {
+                if (!_passwordHasher.Verificar(request.Password, usuario.PasswordHash))
+                    return Unauthorized(new { mensaje = "Credenciales inválidas." });
+            }
+            else
+            {
+                // Camino legacy: el password está guardado en plaintext (datos previos
+                // a la migración). Si coincide, lo re-hasheamos en el momento para
+                // que el próximo login ya use BCrypt. Compatibilidad hacia atrás.
+                if (usuario.PasswordHash != request.Password)
+                    return Unauthorized(new { mensaje = "Credenciales inválidas." });
+
+                usuario.PasswordHash = _passwordHasher.Hash(request.Password);
+                await _unitOfWork.SaveChangesAsync();
+            }
+
             var token = GenerarToken(usuario.NombreUsuario, usuario.Rol);
-            return Ok(new LoginResponse(token, usuario.Rol));
+            return Ok(new LoginResponse(token, usuario.Rol, usuario.NombreUsuario));
+        }
+
+        [HttpPost("cambiar-password")]
+        [Authorize]
+        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        public async Task<IActionResult> CambiarPassword([FromBody] CambiarPasswordRequest request)
+        {
+            var nombreUsuario = User.Identity?.Name;
+            if (string.IsNullOrEmpty(nombreUsuario))
+                return Unauthorized(new { mensaje = "Token inválido." });
+
+            var usuario = (await _unitOfWork.Accesos.FindAsync(u => u.NombreUsuario == nombreUsuario))
+                .FirstOrDefault();
+            if (usuario is null)
+                return Unauthorized(new { mensaje = "Usuario no encontrado." });
+
+            // Verificar password actual (acepta tanto BCrypt como plaintext legacy)
+            bool actualOk = _passwordHasher.EsHashBCrypt(usuario.PasswordHash)
+                ? _passwordHasher.Verificar(request.PasswordActual, usuario.PasswordHash)
+                : usuario.PasswordHash == request.PasswordActual;
+
+            if (!actualOk)
+                return BadRequest(new { mensaje = "La contraseña actual no coincide." });
+
+            usuario.PasswordHash = _passwordHasher.Hash(request.PasswordNueva);
+            await _unitOfWork.SaveChangesAsync();
+
+            return NoContent();
         }
 
         private string GenerarToken(string usuario, string rol)

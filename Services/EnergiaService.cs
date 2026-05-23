@@ -1,3 +1,4 @@
+using ApiEnergia.DTOs;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Models;
 
@@ -5,6 +6,10 @@ namespace ApiEnergia.Services
 {
     public class EnergiaService : IEnergiaService
     {
+        // Deben coincidir con el ENUM de la columna pagos_procesados.canal_pago
+        private const string CanalBanco = "SISTEMA_BANCARIO";
+        private const string CanalAgencia = "OFICINA_EMPRESA";
+
         private readonly IUnitOfWork _unitOfWork;
 
         public EnergiaService(IUnitOfWork unitOfWork)
@@ -60,66 +65,273 @@ namespace ApiEnergia.Services
             return recibos.Sum(r => r.SaldoPendiente);
         }
 
-        public async Task ProcesarPagoExternoAsync(string numeroContador, decimal monto)
-        {
-            await ProcesarPagoAsync(numeroContador, monto, null);
-        }
-
-        public async Task ProcesarPagoEfectivoAsync(string numeroContador, decimal monto)
-        {
-            await ProcesarPagoAsync(numeroContador, monto, "EFECTIVO_AGENCIA");
-        }
-
-        private async Task ProcesarPagoAsync(string numeroContador, decimal monto, string? canal)
+        /// <summary>
+        /// Pago notificado por el Banco. Exige que el monto coincida exactamente con
+        /// la deuda total pendiente (no se aceptan parciales para evitar dejar saldo huérfano).
+        /// </summary>
+        public async Task<ResultadoPagoDto> ProcesarPagoExternoAsync(
+            string numeroContador,
+            decimal monto,
+            string? referenciaBanco = null)
         {
             if (string.IsNullOrWhiteSpace(numeroContador))
-                throw new ArgumentException("NumeroContador es requerido.", nameof(numeroContador));
+                return new ResultadoPagoDto(false, "NumeroContador es requerido.", 0m, 0m, 0);
 
             if (monto <= 0)
-                throw new ArgumentOutOfRangeException(nameof(monto), "Monto debe ser mayor a 0.");
+                return new ResultadoPagoDto(false, "El monto debe ser mayor a 0.", 0m, 0m, 0);
+
+            // Validar que el contador exista
+            bool contadorExiste = (await _unitOfWork.Contadores
+                .FindAsync(c => c.NumeroContador == numeroContador)).Any();
+            if (!contadorExiste)
+                return new ResultadoPagoDto(false, $"El contador '{numeroContador}' no existe.", 0m, 0m, 0);
+
+            // Idempotencia: si ya existe un pago con la misma referencia bancaria, evitamos duplicado
+            if (!string.IsNullOrWhiteSpace(referenciaBanco))
+            {
+                var duplicado = await _unitOfWork.Pagos
+                    .FindAsync(p => p.CodigoAutorizacionBanco == referenciaBanco);
+                if (duplicado.Any())
+                {
+                    return new ResultadoPagoDto(
+                        false,
+                        $"Ya existe un pago registrado con la referencia bancaria '{referenciaBanco}'.",
+                        0m, 0m, 0);
+                }
+            }
 
             var recibos = await _unitOfWork.Recibos
                 .FindAsync(r => r.NumeroContador == numeroContador && r.Estado == ReciboEstado.Pendiente);
             var recibosOrdenados = recibos.OrderBy(r => r.FechaEmision).ToList();
 
             if (recibosOrdenados.Count == 0)
-                return;
+                return new ResultadoPagoDto(false, "El contador no tiene deuda pendiente.", 0m, 0m, 0);
 
-            var restante = monto;
-            foreach (var recibo in recibosOrdenados)
+            var saldoTotal = recibosOrdenados.Sum(r => r.SaldoPendiente);
+
+            // El banco siempre paga el saldo total exacto (lo conoce porque consulta primero)
+            if (monto != saldoTotal)
             {
-                if (restante <= 0)
-                    break;
+                return new ResultadoPagoDto(
+                    false,
+                    $"El monto debe coincidir con la deuda pendiente (Q{saldoTotal:N2}).",
+                    0m, saldoTotal, recibosOrdenados.Count);
+            }
 
-                var montoAplicado = Math.Min(restante, recibo.SaldoPendiente);
+            return await AplicarPagoAsync(
+                numeroContador,
+                monto,
+                CanalBanco,
+                referenciaBanco,
+                recibosOrdenados);
+        }
 
-                if (restante >= recibo.SaldoPendiente)
-                {
-                    restante -= recibo.SaldoPendiente;
-                    recibo.SaldoPendiente = 0;
+        /// <summary>
+        /// Pago en efectivo en agencia. Permite pagos parciales aplicados FIFO.
+        /// </summary>
+        public async Task<ResultadoPagoDto> ProcesarPagoEfectivoAsync(string numeroContador, decimal monto)
+        {
+            if (string.IsNullOrWhiteSpace(numeroContador))
+                return new ResultadoPagoDto(false, "NumeroContador es requerido.", 0m, 0m, 0);
+
+            if (monto <= 0)
+                return new ResultadoPagoDto(false, "El monto debe ser mayor a 0.", 0m, 0m, 0);
+
+            bool contadorExiste = (await _unitOfWork.Contadores
+                .FindAsync(c => c.NumeroContador == numeroContador)).Any();
+            if (!contadorExiste)
+                return new ResultadoPagoDto(false, $"El contador '{numeroContador}' no existe.", 0m, 0m, 0);
+
+            var recibos = await _unitOfWork.Recibos
+                .FindAsync(r => r.NumeroContador == numeroContador && r.Estado == ReciboEstado.Pendiente);
+            var recibosOrdenados = recibos.OrderBy(r => r.FechaEmision).ToList();
+
+            if (recibosOrdenados.Count == 0)
+                return new ResultadoPagoDto(false, "El contador no tiene deuda pendiente.", 0m, 0m, 0);
+
+            return await AplicarPagoAsync(
+                numeroContador,
+                monto,
+                CanalAgencia,
+                null,
+                recibosOrdenados);
+        }
+
+        // ----------------------------------------------------------------
+        // Aplicación común: distribuye el monto FIFO sobre los recibos
+        // pendientes, registra cada porción en pagos_procesados y guarda.
+        // ----------------------------------------------------------------
+        private async Task<ResultadoPagoDto> AplicarPagoAsync(
+            string numeroContador,
+            decimal monto,
+            string canal,
+            string? referenciaBanco,
+            List<ReciboLuz> recibosPendientes)
+        {
+            var restante = monto;
+            var aplicado = 0m;
+            var afectados = 0;
+
+            foreach (var recibo in recibosPendientes)
+            {
+                if (restante <= 0) break;
+
+                var aPagar = Math.Min(restante, recibo.SaldoPendiente);
+
+                recibo.SaldoPendiente -= aPagar;
+                if (recibo.SaldoPendiente == 0)
                     recibo.Estado = ReciboEstado.Pagado;
-                }
-                else
+
+                await _unitOfWork.Pagos.AddAsync(new PagosProcesados
                 {
-                    recibo.SaldoPendiente -= restante;
-                    restante = 0;
-                }
-                
-                if (canal is not null && montoAplicado > 0)
-                {
-                    await _unitOfWork.Pagos.AddAsync(new PagosProcesados
-                    {
-                        IdRecibo = recibo.IdRecibo,
-                        NumeroContador = numeroContador,
-                        Monto = montoAplicado,
-                        FechaCobro = DateTime.UtcNow,
-                        CanalPago = canal,
-                        CodigoAutorizacionBanco = null
-                    });
-                }
+                    IdRecibo = recibo.IdRecibo,
+                    NumeroContador = numeroContador,
+                    Monto = aPagar,
+                    FechaCobro = DateTime.UtcNow,
+                    CanalPago = canal,
+                    CodigoAutorizacionBanco = referenciaBanco
+                });
+
+                restante -= aPagar;
+                aplicado += aPagar;
+                afectados++;
             }
 
             await _unitOfWork.SaveChangesAsync();
+
+            var saldoRestante = recibosPendientes.Sum(r => r.SaldoPendiente);
+
+            return new ResultadoPagoDto(
+                Exito: true,
+                Mensaje: aplicado == monto
+                    ? "Pago aplicado correctamente."
+                    : "Pago aplicado parcialmente (sobró efectivo no aplicable).",
+                MontoAplicado: aplicado,
+                SaldoRestante: saldoRestante,
+                RecibosAfectados: afectados);
+        }
+
+        // ----------------------------------------------------------------
+        // Consultas del portal de cliente
+        // ----------------------------------------------------------------
+
+        public async Task<MiCuentaResponseDto?> ObtenerCuentaPorDpiAsync(string dpi)
+        {
+            if (string.IsNullOrWhiteSpace(dpi)) return null;
+
+            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            if (cliente is null) return null;
+
+            var contadores = await _unitOfWork.Contadores
+                .FindAsync(c => c.IdCliente == cliente.IdCliente);
+            var numerosContador = contadores.Select(c => c.NumeroContador).ToList();
+
+            // Cargar todos los recibos pendientes de los contadores del cliente
+            // de una sola vez para no hacer N+1 queries.
+            var recibosPendientes = await _unitOfWork.Recibos
+                .FindAsync(r => numerosContador.Contains(r.NumeroContador) && r.Estado == ReciboEstado.Pendiente);
+
+            var saldosPorContador = recibosPendientes
+                .GroupBy(r => r.NumeroContador)
+                .ToDictionary(g => g.Key, g => g.Sum(r => r.SaldoPendiente));
+
+            var contadoresDto = contadores
+                .OrderBy(c => c.FechaInstalacion)
+                .Select(c => new ContadorResumenDto(
+                    NumeroContador: c.NumeroContador,
+                    DireccionInmueble: c.DireccionInmueble,
+                    Estado: c.Estado,
+                    FechaInstalacion: c.FechaInstalacion,
+                    SaldoPendiente: saldosPorContador.GetValueOrDefault(c.NumeroContador, 0m)))
+                .ToList();
+
+            var saldoTotal = contadoresDto.Sum(c => c.SaldoPendiente);
+
+            return new MiCuentaResponseDto(
+                IdCliente: cliente.IdCliente,
+                Dpi: cliente.Dpi,
+                Nombre: cliente.Nombre,
+                Apellido: cliente.Apellido,
+                Correo: cliente.Correo,
+                SaldoTotalPendiente: saldoTotal,
+                Contadores: contadoresDto);
+        }
+
+        public async Task<IReadOnlyList<ReciboResumenDto>> ListarRecibosPorDpiAsync(
+            string dpi,
+            string? numeroContador = null,
+            string? estado = null)
+        {
+            if (string.IsNullOrWhiteSpace(dpi)) return Array.Empty<ReciboResumenDto>();
+
+            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            if (cliente is null) return Array.Empty<ReciboResumenDto>();
+
+            var contadoresCliente = await _unitOfWork.Contadores
+                .FindAsync(c => c.IdCliente == cliente.IdCliente);
+            var numerosContador = contadoresCliente.Select(c => c.NumeroContador).ToHashSet();
+
+            // Si pasaron numeroContador, asegurar que pertenezca al cliente.
+            if (!string.IsNullOrWhiteSpace(numeroContador))
+            {
+                if (!numerosContador.Contains(numeroContador))
+                    return Array.Empty<ReciboResumenDto>();
+                numerosContador = new HashSet<string> { numeroContador };
+            }
+
+            var recibos = await _unitOfWork.Recibos
+                .FindAsync(r => numerosContador.Contains(r.NumeroContador));
+
+            // Filtro de estado opcional, case-insensitive
+            IEnumerable<ReciboLuz> filtrados = recibos;
+            if (!string.IsNullOrWhiteSpace(estado)
+                && Enum.TryParse<ReciboEstado>(estado, ignoreCase: true, out var estadoEnum))
+            {
+                filtrados = filtrados.Where(r => r.Estado == estadoEnum);
+            }
+
+            return filtrados
+                .OrderByDescending(r => r.FechaEmision)
+                .ThenByDescending(r => r.IdRecibo)
+                .Select(r => new ReciboResumenDto(
+                    IdRecibo: r.IdRecibo,
+                    NumeroContador: r.NumeroContador,
+                    FechaEmision: r.FechaEmision,
+                    MontoTotal: r.MontoTotal,
+                    SaldoPendiente: r.SaldoPendiente,
+                    Estado: r.Estado.ToString()))
+                .ToList();
+        }
+
+        public async Task<IReadOnlyList<PagoResumenDto>?> ListarPagosDeReciboAsync(string dpi, int idRecibo)
+        {
+            if (string.IsNullOrWhiteSpace(dpi) || idRecibo <= 0) return null;
+
+            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            if (cliente is null) return null;
+
+            var recibo = (await _unitOfWork.Recibos.FindAsync(r => r.IdRecibo == idRecibo)).FirstOrDefault();
+            if (recibo is null) return null;
+
+            // Validar que el recibo pertenece a un contador del cliente.
+            var perteneceAlCliente = (await _unitOfWork.Contadores
+                .FindAsync(c => c.IdCliente == cliente.IdCliente && c.NumeroContador == recibo.NumeroContador))
+                .Any();
+            if (!perteneceAlCliente) return null;
+
+            var pagos = await _unitOfWork.Pagos.FindAsync(p => p.IdRecibo == idRecibo);
+
+            return pagos
+                .OrderByDescending(p => p.FechaCobro)
+                .Select(p => new PagoResumenDto(
+                    IdPago: p.IdPago,
+                    IdRecibo: p.IdRecibo,
+                    NumeroContador: p.NumeroContador,
+                    Monto: p.Monto,
+                    FechaCobro: p.FechaCobro,
+                    CanalPago: p.CanalPago,
+                    CodigoAutorizacionBanco: p.CodigoAutorizacionBanco))
+                .ToList();
         }
     }
 }

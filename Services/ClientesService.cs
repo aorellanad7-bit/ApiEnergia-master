@@ -1,3 +1,4 @@
+using ApiEnergia.Auth;
 using ApiEnergia.DTOs;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Models;
@@ -7,10 +8,12 @@ namespace ApiEnergia.Services
     public class ClientesService : IClientesService
     {
         private readonly IUnitOfWork _unitOfWork;
+        private readonly IPasswordHasher _passwordHasher;
 
-        public ClientesService(IUnitOfWork unitOfWork)
+        public ClientesService(IUnitOfWork unitOfWork, IPasswordHasher passwordHasher)
         {
             _unitOfWork = unitOfWork;
+            _passwordHasher = passwordHasher;
         }
 
         public async Task<CrearClienteConContadorResponse> CrearClienteConContadorAsync(CrearClienteConContadorRequest request)
@@ -48,7 +51,7 @@ namespace ApiEnergia.Services
             {
                 IdCliente = cliente.IdCliente,
                 NombreUsuario = request.Dpi,
-                PasswordHash = passwordTemporal,
+                PasswordHash = _passwordHasher.Hash(passwordTemporal),
                 Rol = "CLIENTE"
             });
 
