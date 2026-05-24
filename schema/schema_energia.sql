@@ -95,7 +95,14 @@ CREATE TABLE IF NOT EXISTS `pagos_procesados` (
     PRIMARY KEY (`id_pago`),
     KEY `ix_pagos_procesados_numero_contador` (`numero_contador`),
     KEY `ix_pagos_procesados_id_recibo` (`id_recibo`),
-    UNIQUE KEY `uk_pagos_procesados_codigo_autorizacion` (`codigo_autorizacion_banco`),
+    -- Idempotencia: una misma autorización del banco no se puede aplicar dos
+    -- veces sobre el MISMO recibo. El par (autorizacion, recibo) es único,
+    -- pero la autorización por sí sola puede repetirse porque un solo pago
+    -- bancario se distribuye FIFO entre todos los recibos pendientes del
+    -- contador, generando N filas con la misma autorización (una por recibo).
+    UNIQUE KEY `uk_pagos_procesados_autorizacion_recibo`
+        (`codigo_autorizacion_banco`, `id_recibo`),
+    KEY `ix_pagos_procesados_codigo_autorizacion` (`codigo_autorizacion_banco`),
     CONSTRAINT `fk_pagos_procesados__contador_energia`
         FOREIGN KEY (`numero_contador`) REFERENCES `contador_energia` (`numero_contador`),
     CONSTRAINT `fk_pagos_procesados__recibo_luz`
@@ -124,8 +131,11 @@ SET FOREIGN_KEY_CHECKS = 1;
 --
 -- * Todas las claves foráneas tienen índices secundarios explícitos para que
 --   los JOINs y los borrados en cascada sean eficientes.
--- * `pagos_procesados.codigo_autorizacion_banco` es UNIQUE → garantiza
---   idempotencia: el mismo `idDebito` del banco no se puede aplicar dos veces.
+-- * `pagos_procesados.(codigo_autorizacion_banco, id_recibo)` es UNIQUE →
+--   garantiza idempotencia por recibo: el mismo `idDebito` del banco no se
+--   puede aplicar dos veces sobre el mismo recibo, pero sí puede aparecer
+--   varias veces ligado a recibos distintos del mismo contador (cuando el
+--   pago bancario salda múltiples recibos pendientes en FIFO).
 -- * Las fechas son DATETIME (no DATE) porque la API guarda timestamps con hora.
 -- * Los ENUM tienen los valores EXACTOS que escribe el código C# (sensible al
 --   case en MySQL).
