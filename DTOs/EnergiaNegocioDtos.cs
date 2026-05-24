@@ -31,10 +31,19 @@ namespace ApiEnergia.DTOs
     /// Respuesta del orquestador de pago del portal: incluye lo aplicado por Energía y
     /// la respuesta cruda del banco para que el frontend pueda mostrar trazabilidad.
     /// </summary>
+    /// <param name="AplicadoEnEnergia">
+    /// true cuando el callback del banco logró marcar los recibos como pagados en Energía.
+    /// false significa que el banco cobró pero el saldo NO bajó: el frontend debe alertar.
+    /// </param>
+    /// <param name="ReferenciaBanco">
+    /// idDebito reportado por el banco. Sirve para soporte/conciliación si AplicadoEnEnergia=false.
+    /// </param>
     public record PagarSaldoClienteResponseDto(
         string NumeroContador,
         decimal MontoPagado,
         decimal SaldoRestante,
+        bool AplicadoEnEnergia,
+        string? ReferenciaBanco,
         string Mensaje,
         object? RespuestaBanco);
 

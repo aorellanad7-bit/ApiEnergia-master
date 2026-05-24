@@ -64,7 +64,7 @@ namespace ApiEnergia.Controllers
         /// <summary>
         /// Lista los recibos del cliente. Filtros opcionales:
         /// <c>numeroContador</c> (de los que ya tiene asignados) y
-        /// <c>estado</c> (Pendiente, Pagado, Vencido).
+        /// <c>estado</c> (Pendiente, Pagado).
         /// </summary>
         [HttpGet("recibos")]
         [ProducesResponseType(typeof(IReadOnlyList<ReciboResumenDto>), StatusCodes.Status200OK)]
@@ -239,16 +239,93 @@ namespace ApiEnergia.Controllers
                 });
             }
 
-            // El callback del banco /api/IntegracionBancaria/pago ya pone el saldo en 0,
-            // pero lo consultamos de nuevo para devolver al frontend el estado actual.
+            // El banco respondió 2xx, pero eso solo confirma que cobró al cuentahabiente.
+            // El callback hacia /api/IntegracionBancaria/pago puede haber fallado
+            // (el banco lo captura silenciosamente y solo lo expone como
+            // "notificacionEnviada": false). Si no detectamos eso, mentiríamos al cliente.
+            var notificacionAlEmpresa = LeerNotificacionEnviada(respuestaBanco);
+            var referenciaBanco = LeerReferenciaBanco(respuestaBanco);
+
+            // Releemos el saldo. Si bajó a 0, el callback aplicó. Si no, se quedó pendiente.
             var saldoRestante = await _energiaService.ConsultarDeudaTotalAsync(numeroContador);
+            var saldoBajo = saldoRestante < saldoPendiente;
+            var aplicadoEnEnergia = saldoBajo && notificacionAlEmpresa != false;
+
+            if (!aplicadoEnEnergia)
+            {
+                _logger.LogError(
+                    "Banco cobró pero Energía NO aplicó el pago | contador={Contador} monto={Monto} " +
+                    "saldoPendienteAntes={Antes} saldoRestante={Despues} notificacionEnviada={Notif} referenciaBanco={Ref}",
+                    numeroContador, saldoPendiente, saldoPendiente, saldoRestante,
+                    notificacionAlEmpresa, referenciaBanco);
+
+                return StatusCode(StatusCodes.Status502BadGateway, new PagarSaldoClienteResponseDto(
+                    NumeroContador: numeroContador,
+                    MontoPagado: saldoPendiente,
+                    SaldoRestante: saldoRestante,
+                    AplicadoEnEnergia: false,
+                    ReferenciaBanco: referenciaBanco,
+                    Mensaje: "El banco cobró el monto pero Energía NO recibió la confirmación. " +
+                            "Guarda la referencia bancaria y contacta a soporte para conciliar el pago. " +
+                            "NO vuelvas a pagar para evitar un doble cobro.",
+                    RespuestaBanco: respuestaBanco));
+            }
+
+            _logger.LogInformation(
+                "Pago aplicado OK | contador={Contador} pagado={Pagado} saldoRestante={Saldo} referenciaBanco={Ref}",
+                numeroContador, saldoPendiente, saldoRestante, referenciaBanco);
 
             return Ok(new PagarSaldoClienteResponseDto(
                 NumeroContador: numeroContador,
                 MontoPagado: saldoPendiente,
                 SaldoRestante: saldoRestante,
-                Mensaje: "Pago procesado con éxito.",
+                AplicadoEnEnergia: true,
+                ReferenciaBanco: referenciaBanco,
+                Mensaje: "Pago procesado y aplicado con éxito.",
                 RespuestaBanco: respuestaBanco));
+        }
+
+        /// <summary>
+        /// Extrae "notificacionEnviada" del JSON de respuesta del banco. Devuelve null
+        /// si el banco respondió en un formato inesperado.
+        /// </summary>
+        private static bool? LeerNotificacionEnviada(object? respuestaBanco)
+        {
+            if (respuestaBanco is JsonElement el && el.ValueKind == JsonValueKind.Object)
+            {
+                if (el.TryGetProperty("notificacionEnviada", out var prop) &&
+                    (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False))
+                {
+                    return prop.GetBoolean();
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Extrae el id de la transacción de débito que el banco asigna al cobro.
+        /// El banco lo expone como "idTransaccionDebitoCuentahabiente" en
+        /// PagoServicioResultadoDto y lo usa como referencia bancaria interna.
+        /// Se devuelve al frontend para que el cliente lo guarde como referencia
+        /// ante soporte cuando haya discrepancia.
+        /// </summary>
+        private static string? LeerReferenciaBanco(object? respuestaBanco)
+        {
+            if (respuestaBanco is JsonElement el && el.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var nombre in new[] { "idTransaccionDebitoCuentahabiente", "idDebito" })
+                {
+                    if (!el.TryGetProperty(nombre, out var prop))
+                        continue;
+                    return prop.ValueKind switch
+                    {
+                        JsonValueKind.String => prop.GetString(),
+                        JsonValueKind.Number => prop.GetRawText(),
+                        _ => null
+                    };
+                }
+            }
+            return null;
         }
 
         /// <summary>

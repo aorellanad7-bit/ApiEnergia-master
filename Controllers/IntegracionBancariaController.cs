@@ -19,10 +19,14 @@ namespace ApiEnergia.Controllers
     public class IntegracionBancariaController : ControllerBase
     {
         private readonly IEnergiaService _energiaService;
+        private readonly ILogger<IntegracionBancariaController> _logger;
 
-        public IntegracionBancariaController(IEnergiaService energiaService)
+        public IntegracionBancariaController(
+            IEnergiaService energiaService,
+            ILogger<IntegracionBancariaController> logger)
         {
             _energiaService = energiaService;
+            _logger = logger;
         }
 
         /// <summary>
@@ -40,10 +44,16 @@ namespace ApiEnergia.Controllers
             try
             {
                 var saldo = await _energiaService.ConsultarDeudaTotalAsync(numeroContador);
+                _logger.LogInformation(
+                    "Consulta de deuda OK | contador={Contador} saldo={Saldo}",
+                    numeroContador, saldo);
                 return Ok(new ConsultarDeudaResponseDto(numeroContador, saldo));
             }
             catch (ArgumentException ex)
             {
+                _logger.LogWarning(ex,
+                    "Consulta de deuda RECHAZADA | contador={Contador} motivo={Motivo}",
+                    numeroContador, ex.Message);
                 return BadRequest(new { mensaje = ex.Message });
             }
         }
@@ -59,13 +69,50 @@ namespace ApiEnergia.Controllers
         [ProducesResponseType(typeof(ResultadoPagoDto), StatusCodes.Status404NotFound)]
         public async Task<IActionResult> Pagar([FromBody] NotificacionPagoBancoDto dto)
         {
-            var resultado = await _energiaService.ProcesarPagoExternoAsync(
-                dto.NumeroContador,
-                dto.Monto,
-                dto.ReferenciaBanco);
+            // Logueamos la entrada COMPLETA del callback. Si algún día el
+            // banco deja de llamar a este endpoint, basta con buscar este log
+            // en Log Stream para confirmarlo. El X-Api-Key no se loguea por
+            // seguridad, pero llegar aquí ya implica que pasó la validación.
+            _logger.LogInformation(
+                "Callback Banco RECIBIDO | contador={Contador} monto={Monto} referencia={Referencia}",
+                dto?.NumeroContador, dto?.Monto, dto?.ReferenciaBanco);
+
+            if (dto is null)
+            {
+                _logger.LogWarning("Callback Banco RECHAZADO | body nulo");
+                return BadRequest(new ResultadoPagoDto(false, "Body de la notificación es requerido.", 0m, 0m, 0));
+            }
+
+            ResultadoPagoDto resultado;
+            try
+            {
+                resultado = await _energiaService.ProcesarPagoExternoAsync(
+                    dto.NumeroContador,
+                    dto.Monto,
+                    dto.ReferenciaBanco);
+            }
+            catch (Exception ex)
+            {
+                // Si la BD truena, el banco recibe 500 y NO debe marcar el
+                // débito como notificado, así puede reintentar.
+                _logger.LogError(ex,
+                    "Callback Banco EXPLOTÓ | contador={Contador} monto={Monto} referencia={Referencia}",
+                    dto.NumeroContador, dto.Monto, dto.ReferenciaBanco);
+                return StatusCode(StatusCodes.Status500InternalServerError,
+                    new ResultadoPagoDto(false, $"Error interno aplicando el pago: {ex.Message}", 0m, 0m, 0));
+            }
 
             if (resultado.Exito)
+            {
+                _logger.LogInformation(
+                    "Callback Banco APLICADO | contador={Contador} aplicado={Aplicado} saldoRestante={Saldo} recibosAfectados={Recibos}",
+                    dto.NumeroContador, resultado.MontoAplicado, resultado.SaldoRestante, resultado.RecibosAfectados);
                 return Ok(resultado);
+            }
+
+            _logger.LogWarning(
+                "Callback Banco RECHAZADO | contador={Contador} monto={Monto} motivo={Motivo}",
+                dto.NumeroContador, dto.Monto, resultado.Mensaje);
 
             // Si la causa es contador inexistente → 404, lo demás 400
             if ((resultado.Mensaje ?? string.Empty).Contains("no existe", StringComparison.OrdinalIgnoreCase))
