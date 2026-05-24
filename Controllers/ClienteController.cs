@@ -28,11 +28,16 @@ namespace ApiEnergia.Controllers
 
         private readonly IEnergiaService _energiaService;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ILogger<ClienteController> _logger;
 
-        public ClienteController(IEnergiaService energiaService, IHttpClientFactory httpClientFactory)
+        public ClienteController(
+            IEnergiaService energiaService,
+            IHttpClientFactory httpClientFactory,
+            ILogger<ClienteController> logger)
         {
             _energiaService = energiaService;
             _httpClientFactory = httpClientFactory;
+            _logger = logger;
         }
 
         /// <summary>
@@ -131,16 +136,20 @@ namespace ApiEnergia.Controllers
             if (request is null)
                 return BadRequest(new { mensaje = "Cuerpo de la petición vacío." });
 
-            if (string.IsNullOrWhiteSpace(request.NumeroContador))
+            // Normalizamos primero para evitar que strings sólo con espacios pasen
+            // adelante y terminen como identificador vacío en el llamado al banco.
+            var numeroContador = request.NumeroContador?.Trim() ?? string.Empty;
+            var numeroTarjeta = request.NumeroTarjeta?.Trim() ?? string.Empty;
+            var pin = request.Pin?.Trim() ?? string.Empty;
+
+            if (numeroContador.Length == 0)
                 return BadRequest(new { mensaje = "El número de contador es obligatorio." });
 
-            if (string.IsNullOrWhiteSpace(request.NumeroTarjeta))
+            if (numeroTarjeta.Length == 0)
                 return BadRequest(new { mensaje = "El número de tarjeta es obligatorio." });
 
-            if (string.IsNullOrWhiteSpace(request.Pin))
+            if (pin.Length == 0)
                 return BadRequest(new { mensaje = "El PIN es obligatorio." });
-
-            var numeroContador = request.NumeroContador.Trim();
 
             // 1) Validar pertenencia del contador al cliente autenticado
             var perteneceAlCliente = await _energiaService.ContadorPerteneceAClienteAsync(dpi, numeroContador);
@@ -164,8 +173,8 @@ namespace ApiEnergia.Controllers
             // 3) Construir y enviar la solicitud al API Banco (mismo contrato que UMG)
             var payload = new
             {
-                numeroTarjeta = request.NumeroTarjeta.Trim(),
-                pin = request.Pin.Trim(),
+                numeroTarjeta,
+                pin,
                 tipoServicio = TipoServicioEnergiaElectrica,
                 identificador = numeroContador,
                 monto = saldoPendiente,
@@ -173,6 +182,10 @@ namespace ApiEnergia.Controllers
                     ? $"Pago Energía {numeroContador}"
                     : request.ReferenciaCliente.Trim()
             };
+
+            _logger.LogInformation(
+                "Orquestando pago de contador {NumeroContador} (DPI {Dpi}) por Q{Monto} al API Banco.",
+                numeroContador, dpi, saldoPendiente);
 
             HttpResponseMessage response;
             string rawBody;
@@ -189,6 +202,7 @@ namespace ApiEnergia.Controllers
             }
             catch (HttpRequestException ex)
             {
+                _logger.LogError(ex, "No se pudo contactar al API Banco para el contador {NumeroContador}.", numeroContador);
                 return StatusCode(StatusCodes.Status502BadGateway, new
                 {
                     mensaje = "No se pudo contactar al API Banco.",
@@ -211,9 +225,15 @@ namespace ApiEnergia.Controllers
 
             if (!response.IsSuccessStatusCode)
             {
+                _logger.LogWarning(
+                    "El banco rechazó el pago del contador {NumeroContador}. Status={Status}. Cuerpo={Body}",
+                    numeroContador, (int)response.StatusCode, rawBody);
+
+                var mensajeUsuario = ConstruirMensajeRechazoBanco(rawBody, numeroContador);
+
                 return StatusCode((int)response.StatusCode, new
                 {
-                    mensaje = "El banco rechazó el pago.",
+                    mensaje = mensajeUsuario,
                     statusBanco = (int)response.StatusCode,
                     respuestaBanco = respuestaBanco ?? "(respuesta vacía del banco)"
                 });
@@ -229,6 +249,29 @@ namespace ApiEnergia.Controllers
                 SaldoRestante: saldoRestante,
                 Mensaje: "Pago procesado con éxito.",
                 RespuestaBanco: respuestaBanco));
+        }
+
+        /// <summary>
+        /// Traduce respuestas confusas del banco (típicamente cuando éste a su vez
+        /// recibe un 404 con cuerpo vacío de un proveedor externo) en mensajes
+        /// accionables para el usuario del portal.
+        /// </summary>
+        private static string ConstruirMensajeRechazoBanco(string rawBody, string numeroContador)
+        {
+            if (string.IsNullOrWhiteSpace(rawBody))
+                return "El banco rechazó el pago (sin detalle).";
+
+            // El banco envuelve los errores de Energía con "respondió 404 Not Found. Cuerpo:"
+            // cuando la URL queda mal formada (típicamente identificador vacío). Si vemos
+            // esa firma, damos un mensaje accionable en lugar de propagar el ruido.
+            if (rawBody.Contains("404 Not Found", StringComparison.OrdinalIgnoreCase) &&
+                rawBody.Contains("Cuerpo:", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"El banco no encontró el contador '{numeroContador}' en el sistema de Energía. " +
+                       "Verifica que la API del banco esté apuntando a la URL correcta de Energía y que el contador exista en esa base de datos.";
+            }
+
+            return "El banco rechazó el pago.";
         }
     }
 }
