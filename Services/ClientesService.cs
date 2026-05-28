@@ -61,6 +61,15 @@ namespace ApiEnergia.Services
 
             return new CrearClienteConContadorResponse(numeroContador, request.Dpi, passwordTemporal);
         }
+        public async Task<IReadOnlyList<ClienteLuz>> ObtenerTodosLosClientesAsync()
+        {
+            // Usamos la unidad de trabajo y el repositorio de clientes.
+            // Pasamos una expresión lambda vacía (c => true) para que traiga TODOS sin filtrar.
+            var clientes = await _unitOfWork.Clientes.FindAsync(c => true);
+            
+            // Lo convertimos a una lista de solo lectura para cumplir con la firma
+            return clientes.ToList().AsReadOnly();
+        }
 
         private static string GenerarNumeroContador()
         {

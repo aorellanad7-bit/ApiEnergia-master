@@ -91,5 +91,19 @@ namespace ApiEnergia.Controllers
             var recibos = await _energiaService.ListarRecibosPorDpiAsync(dpi, numeroContador, estado);
             return Ok(recibos);
         }
+        /// <summary>
+        /// Obtiene el listado completo de todos los clientes registrados en el sistema.
+        /// </summary>
+        [HttpGet("clientes")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<IActionResult> ObtenerTodosLosClientes()
+        {
+            // Usamos el servicio de clientes que ya tienes inyectado arriba
+            // NOTA: Asumo que tu interfaz IClientesService tiene un método para listar.
+            // Si tu método se llama diferente (ej: ListarClientesAsync), cambia el nombre aquí abajo.
+            var clientes = await _clientesService.ObtenerTodosLosClientesAsync();
+            return Ok(clientes);
+        }
     }
+    
 }
