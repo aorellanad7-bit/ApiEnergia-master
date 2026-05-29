@@ -1,6 +1,9 @@
 using ApiEnergia.DTOs;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Models;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using MySqlConnector;
 
 namespace ApiEnergia.Services
 {
@@ -10,11 +13,26 @@ namespace ApiEnergia.Services
         private const string CanalBanco = "SISTEMA_BANCARIO";
         private const string CanalAgencia = "OFICINA_EMPRESA";
 
-        private readonly IUnitOfWork _unitOfWork;
+        // Tolerancia en quetzales para comparar montos `decimal`. Evita rechazar
+        // un pago bancario por una diferencia de redondeo de medio centavo.
+        private const decimal ToleranciaMonto = 0.005m;
 
-        public EnergiaService(IUnitOfWork unitOfWork)
+        // Código de error de MySQL para "Duplicate entry" en un índice UNIQUE.
+        // Lo aprovechamos para implementar idempotencia "optimista":
+        // intentamos insertar el pago y, si la BD lo rechaza por colisión con
+        // el UNIQUE compuesto (codigo_autorizacion_banco, id_recibo), sabemos
+        // que el callback ya se aplicó previamente.
+        private const int MySqlDuplicateKeyError = 1062;
+
+        private readonly IUnitOfWork _unitOfWork;
+        private readonly IOptionsMonitor<TarifaOptions> _tarifa;
+
+        public EnergiaService(IUnitOfWork unitOfWork, IOptionsMonitor<TarifaOptions> tarifa)
         {
             _unitOfWork = unitOfWork;
+            // IOptionsMonitor (no IOptions) para que cambios en appsettings se
+            // recojan en caliente sin reiniciar el App Service.
+            _tarifa = tarifa;
         }
 
         public async Task<ReciboLuz> RegistrarLecturaAsync(string numeroContador, int kilovatios)
@@ -25,8 +43,8 @@ namespace ApiEnergia.Services
             if (kilovatios <= 0)
                 throw new ArgumentOutOfRangeException(nameof(kilovatios), "Kilovatios debe ser mayor a 0.");
 
-            bool contadorExiste = (await _unitOfWork.Contadores
-                .FindAsync(t => t.NumeroContador == numeroContador)).Any();
+            bool contadorExiste = await _unitOfWork.Contadores
+                .AnyAsync(t => t.NumeroContador == numeroContador);
             if (!contadorExiste)
                 throw new InvalidOperationException($"El contador '{numeroContador}' no está registrado.");
 
@@ -37,7 +55,10 @@ namespace ApiEnergia.Services
                 FechaLectura = DateTime.UtcNow
             };
 
-            var monto = Math.Round(kilovatios * 1.50m, 2, MidpointRounding.AwayFromZero);
+            // Tarifa configurable vía Tarifa:PrecioPorKwh en appsettings.
+            // Antes estaba hardcoded a 1.50; ahora se puede ajustar sin redeploy.
+            var precioPorKwh = _tarifa.CurrentValue.PrecioPorKwh;
+            var monto = Math.Round(kilovatios * precioPorKwh, 2, MidpointRounding.AwayFromZero);
             var recibo = new ReciboLuz
             {
                 NumeroContador = numeroContador,
@@ -66,8 +87,11 @@ namespace ApiEnergia.Services
         }
 
         /// <summary>
-        /// Pago notificado por el Banco. Exige que el monto coincida exactamente con
-        /// la deuda total pendiente (no se aceptan parciales para evitar dejar saldo huérfano).
+        /// Pago notificado por el Banco. Exige que el monto coincida con la deuda
+        /// total pendiente (con tolerancia de medio centavo). Idempotente: si el
+        /// banco reintenta el callback con la misma referencia, devolvemos un
+        /// resultado <c>Exito=true</c> con <c>YaProcesado=true</c> en lugar de
+        /// rechazarlo, para que el banco no marque el débito como fallido.
         /// </summary>
         public async Task<ResultadoPagoDto> ProcesarPagoExternoAsync(
             string numeroContador,
@@ -81,22 +105,30 @@ namespace ApiEnergia.Services
                 return new ResultadoPagoDto(false, "El monto debe ser mayor a 0.", 0m, 0m, 0);
 
             // Validar que el contador exista
-            bool contadorExiste = (await _unitOfWork.Contadores
-                .FindAsync(c => c.NumeroContador == numeroContador)).Any();
+            bool contadorExiste = await _unitOfWork.Contadores
+                .AnyAsync(c => c.NumeroContador == numeroContador);
             if (!contadorExiste)
                 return new ResultadoPagoDto(false, $"El contador '{numeroContador}' no existe.", 0m, 0m, 0);
 
-            // Idempotencia: si ya existe un pago con la misma referencia bancaria, evitamos duplicado
+            // Idempotencia previa (rápida): si ya hay un pago con esta referencia,
+            // contestamos éxito inmediatamente. La verificación final la garantiza
+            // el UNIQUE (codigo_autorizacion_banco, id_recibo) en la BD; aquí solo
+            // ahorramos el round-trip extra al INSERT cuando ya sabemos el resultado.
             if (!string.IsNullOrWhiteSpace(referenciaBanco))
             {
-                var duplicado = await _unitOfWork.Pagos
-                    .FindAsync(p => p.CodigoAutorizacionBanco == referenciaBanco);
-                if (duplicado.Any())
+                bool yaAplicado = await _unitOfWork.Pagos
+                    .AnyAsync(p => p.CodigoAutorizacionBanco == referenciaBanco);
+                if (yaAplicado)
                 {
+                    var saldoRestante = await ConsultarDeudaTotalAsync(numeroContador);
                     return new ResultadoPagoDto(
-                        false,
-                        $"Ya existe un pago registrado con la referencia bancaria '{referenciaBanco}'.",
-                        0m, 0m, 0);
+                        Exito: true,
+                        Mensaje: $"El pago con referencia '{referenciaBanco}' ya había sido aplicado.",
+                        MontoAplicado: 0m,
+                        SaldoRestante: saldoRestante,
+                        RecibosAfectados: 0,
+                        CambioADevolver: 0m,
+                        YaProcesado: true);
                 }
             }
 
@@ -109,8 +141,10 @@ namespace ApiEnergia.Services
 
             var saldoTotal = recibosOrdenados.Sum(r => r.SaldoPendiente);
 
-            // El banco siempre paga el saldo total exacto (lo conoce porque consulta primero)
-            if (monto != saldoTotal)
+            // Comparación con tolerancia de medio centavo: el banco siempre paga
+            // el saldo exacto que le devolvimos en /deuda, pero un redondeo
+            // intermedio podría introducir 0.001 de diferencia.
+            if (Math.Abs(monto - saldoTotal) > ToleranciaMonto)
             {
                 return new ResultadoPagoDto(
                     false,
@@ -118,16 +152,37 @@ namespace ApiEnergia.Services
                     0m, saldoTotal, recibosOrdenados.Count);
             }
 
-            return await AplicarPagoAsync(
-                numeroContador,
-                monto,
-                CanalBanco,
-                referenciaBanco,
-                recibosOrdenados);
+            try
+            {
+                return await AplicarPagoAsync(
+                    numeroContador,
+                    saldoTotal, // usar exactamente el saldo conocido por la API
+                    CanalBanco,
+                    referenciaBanco,
+                    recibosOrdenados);
+            }
+            catch (DbUpdateException ex) when (EsErrorDuplicateKey(ex))
+            {
+                // Carrera contra otro callback con la misma referencia: ya quedó
+                // aplicado por el otro proceso. Reportamos éxito idempotente.
+                var saldoRestante = await ConsultarDeudaTotalAsync(numeroContador);
+                return new ResultadoPagoDto(
+                    Exito: true,
+                    Mensaje: $"El pago con referencia '{referenciaBanco}' ya había sido aplicado (carrera detectada).",
+                    MontoAplicado: 0m,
+                    SaldoRestante: saldoRestante,
+                    RecibosAfectados: 0,
+                    CambioADevolver: 0m,
+                    YaProcesado: true);
+            }
         }
 
         /// <summary>
-        /// Pago en efectivo en agencia. Permite pagos parciales aplicados FIFO.
+        /// Pago en efectivo en agencia. Aplica FIFO sobre los recibos pendientes.
+        /// Si el cajero recibe más efectivo del que cubre el saldo total, se aplica
+        /// el saldo completo y el excedente se devuelve como <c>CambioADevolver</c>
+        /// para que el cajero sepa cuánto entregar. Nunca queda dinero "huérfano"
+        /// sin reportar.
         /// </summary>
         public async Task<ResultadoPagoDto> ProcesarPagoEfectivoAsync(string numeroContador, decimal monto)
         {
@@ -137,8 +192,8 @@ namespace ApiEnergia.Services
             if (monto <= 0)
                 return new ResultadoPagoDto(false, "El monto debe ser mayor a 0.", 0m, 0m, 0);
 
-            bool contadorExiste = (await _unitOfWork.Contadores
-                .FindAsync(c => c.NumeroContador == numeroContador)).Any();
+            bool contadorExiste = await _unitOfWork.Contadores
+                .AnyAsync(c => c.NumeroContador == numeroContador);
             if (!contadorExiste)
                 return new ResultadoPagoDto(false, $"El contador '{numeroContador}' no existe.", 0m, 0m, 0);
 
@@ -149,12 +204,28 @@ namespace ApiEnergia.Services
             if (recibosOrdenados.Count == 0)
                 return new ResultadoPagoDto(false, "El contador no tiene deuda pendiente.", 0m, 0m, 0);
 
-            return await AplicarPagoAsync(
+            var saldoTotal = recibosOrdenados.Sum(r => r.SaldoPendiente);
+
+            // Si el cliente entregó más de lo que debe, aplicamos solo el saldo y
+            // el excedente queda como cambio. Esto reemplaza el comportamiento
+            // anterior, que silenciosamente "se quedaba" con el sobrante.
+            var aplicable = Math.Min(monto, saldoTotal);
+            var cambio = monto - aplicable;
+
+            var resultado = await AplicarPagoAsync(
                 numeroContador,
-                monto,
+                aplicable,
                 CanalAgencia,
                 null,
                 recibosOrdenados);
+
+            return resultado with
+            {
+                CambioADevolver = cambio,
+                Mensaje = cambio > 0m
+                    ? $"Pago aplicado correctamente. Devolver Q{cambio:N2} en efectivo al cliente."
+                    : resultado.Mensaje
+            };
         }
 
         // ----------------------------------------------------------------
@@ -203,12 +274,23 @@ namespace ApiEnergia.Services
 
             return new ResultadoPagoDto(
                 Exito: true,
-                Mensaje: aplicado == monto
-                    ? "Pago aplicado correctamente."
-                    : "Pago aplicado parcialmente (sobró efectivo no aplicable).",
+                Mensaje: "Pago aplicado correctamente.",
                 MontoAplicado: aplicado,
                 SaldoRestante: saldoRestante,
                 RecibosAfectados: afectados);
+        }
+
+        /// <summary>
+        /// Detecta si un <see cref="DbUpdateException"/> fue causado por un
+        /// duplicate key (error 1062 en MySQL). Lo usamos para implementar
+        /// idempotencia: si el UNIQUE de pagos_procesados rechaza el INSERT,
+        /// significa que el callback del banco ya se procesó previamente.
+        /// </summary>
+        private static bool EsErrorDuplicateKey(DbUpdateException ex)
+        {
+            // Pomelo expone la excepción nativa de MySql en InnerException.
+            return ex.InnerException is MySqlException mySqlEx
+                && mySqlEx.Number == MySqlDuplicateKeyError;
         }
 
         // ----------------------------------------------------------------
@@ -219,7 +301,7 @@ namespace ApiEnergia.Services
         {
             if (string.IsNullOrWhiteSpace(dpi)) return null;
 
-            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == dpi);
             if (cliente is null) return null;
 
             var contadores = await _unitOfWork.Contadores
@@ -264,7 +346,7 @@ namespace ApiEnergia.Services
         {
             if (string.IsNullOrWhiteSpace(dpi)) return Array.Empty<ReciboResumenDto>();
 
-            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == dpi);
             if (cliente is null) return Array.Empty<ReciboResumenDto>();
 
             var contadoresCliente = await _unitOfWork.Contadores
@@ -307,16 +389,15 @@ namespace ApiEnergia.Services
         {
             if (string.IsNullOrWhiteSpace(dpi) || idRecibo <= 0) return null;
 
-            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == dpi);
             if (cliente is null) return null;
 
-            var recibo = (await _unitOfWork.Recibos.FindAsync(r => r.IdRecibo == idRecibo)).FirstOrDefault();
+            var recibo = await _unitOfWork.Recibos.FirstOrDefaultAsync(r => r.IdRecibo == idRecibo);
             if (recibo is null) return null;
 
             // Validar que el recibo pertenece a un contador del cliente.
-            var perteneceAlCliente = (await _unitOfWork.Contadores
-                .FindAsync(c => c.IdCliente == cliente.IdCliente && c.NumeroContador == recibo.NumeroContador))
-                .Any();
+            var perteneceAlCliente = await _unitOfWork.Contadores
+                .AnyAsync(c => c.IdCliente == cliente.IdCliente && c.NumeroContador == recibo.NumeroContador);
             if (!perteneceAlCliente) return null;
 
             var pagos = await _unitOfWork.Pagos.FindAsync(p => p.IdRecibo == idRecibo);
@@ -339,12 +420,19 @@ namespace ApiEnergia.Services
             if (string.IsNullOrWhiteSpace(dpi) || string.IsNullOrWhiteSpace(numeroContador))
                 return false;
 
-            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == dpi)).FirstOrDefault();
+            var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == dpi);
             if (cliente is null) return false;
 
-            return (await _unitOfWork.Contadores
-                .FindAsync(c => c.IdCliente == cliente.IdCliente && c.NumeroContador == numeroContador))
-                .Any();
+            return await _unitOfWork.Contadores
+                .AnyAsync(c => c.IdCliente == cliente.IdCliente && c.NumeroContador == numeroContador);
+        }
+
+        public Task<bool> ContadorExisteAsync(string numeroContador)
+        {
+            if (string.IsNullOrWhiteSpace(numeroContador))
+                return Task.FromResult(false);
+
+            return _unitOfWork.Contadores.AnyAsync(c => c.NumeroContador == numeroContador);
         }
     }
 }

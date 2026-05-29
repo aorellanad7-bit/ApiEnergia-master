@@ -1,6 +1,7 @@
 using ApiEnergia.DbContext;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Models;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ApiEnergia.Repositories
 {
@@ -29,6 +30,11 @@ namespace ApiEnergia.Repositories
         public Task<int> SaveChangesAsync()
         {
             return _db.SaveChangesAsync();
+        }
+
+        public Task<IDbContextTransaction> BeginTransactionAsync()
+        {
+            return _db.Database.BeginTransactionAsync();
         }
     }
 }

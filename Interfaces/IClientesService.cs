@@ -1,5 +1,4 @@
 using ApiEnergia.DTOs;
-using ApiEnergia.Models;
 
 namespace ApiEnergia.Interfaces
 {
@@ -7,6 +6,16 @@ namespace ApiEnergia.Interfaces
     {
         Task<CrearClienteConContadorResponse> CrearClienteConContadorAsync(CrearClienteConContadorRequest request);
 
-        Task<IReadOnlyList<ClienteLuz>> ObtenerTodosLosClientesAsync();
+        /// <summary>
+        /// Devuelve clientes paginados como DTOs (sin entidades EF). El filtro
+        /// <paramref name="busqueda"/> hace match parcial sobre DPI, nombre,
+        /// apellido o correo (case-insensitive). Los parámetros de paginación
+        /// se normalizan internamente a un rango seguro para evitar consultas
+        /// pesadas (TamanoPagina máximo controlado).
+        /// </summary>
+        Task<PaginadoDto<ClienteResumenDto>> ObtenerTodosLosClientesAsync(
+            int pagina = 1,
+            int tamanoPagina = 50,
+            string? busqueda = null);
     }
 }

@@ -7,13 +7,16 @@ namespace ApiEnergia.Controllers
 {
     /// <summary>
     /// Operaciones realizadas por personal de agencia (lecturas, alta de
-    /// clientes, pagos en efectivo). Requieren autenticación.
+    /// clientes, pagos en efectivo). Restringidas al rol <c>ADMIN_AGENCIA</c>:
+    /// los usuarios con rol <c>CLIENTE</c> no pueden invocar estos endpoints
+    /// (de lo contrario podrían crear clientes, registrar lecturas o procesar
+    /// pagos de cualquier contador).
     /// </summary>
     [ApiController]
     [Route("api/Energia/Agencia")]
     [Produces("application/json")]
     [Tags("Agencia Local")]
-    [Authorize]
+    [Authorize(Roles = "ADMIN_AGENCIA")]
     public class AgenciaLocalController : ControllerBase
     {
         private readonly IEnergiaService _energiaService;
@@ -47,10 +50,28 @@ namespace ApiEnergia.Controllers
 
         [HttpPost("cliente")]
         [ProducesResponseType(typeof(CrearClienteConContadorResponse), StatusCodes.Status201Created)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status409Conflict)]
         public async Task<IActionResult> CrearCliente([FromBody] CrearClienteConContadorRequest request)
         {
-            var respuesta = await _clientesService.CrearClienteConContadorAsync(request);
-            return Created(string.Empty, respuesta);
+            try
+            {
+                var respuesta = await _clientesService.CrearClienteConContadorAsync(request);
+                // 201 + Location apunta al endpoint de consulta del cliente recién creado.
+                return CreatedAtAction(
+                    nameof(ConsultarCuentaCliente),
+                    new { dpi = respuesta.UsuarioAsignado },
+                    respuesta);
+            }
+            catch (ArgumentNullException ex)
+            {
+                return BadRequest(new { mensaje = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Ej.: ya existe un usuario_acceso_energia con ese DPI.
+                return Conflict(new { mensaje = ex.Message });
+            }
         }
 
         [HttpPost("pago-efectivo")]
@@ -92,17 +113,24 @@ namespace ApiEnergia.Controllers
             return Ok(recibos);
         }
         /// <summary>
-        /// Obtiene el listado completo de todos los clientes registrados en el sistema.
+        /// Lista paginada de clientes registrados. Acepta filtro de búsqueda
+        /// parcial sobre DPI, nombre, apellido o correo (case-insensitive).
+        /// El tamaño de página máximo se acota internamente para evitar que
+        /// un cliente del API solicite cargas demasiado pesadas.
         /// </summary>
+        /// <param name="pagina">Número de página (1-based). Default: 1.</param>
+        /// <param name="tamanoPagina">Filas por página. Default: 50, máximo 200.</param>
+        /// <param name="busqueda">Texto opcional para filtrar.</param>
         [HttpGet("clientes")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        public async Task<IActionResult> ObtenerTodosLosClientes()
+        [ProducesResponseType(typeof(PaginadoDto<ClienteResumenDto>), StatusCodes.Status200OK)]
+        public async Task<IActionResult> ObtenerTodosLosClientes(
+            [FromQuery] int pagina = 1,
+            [FromQuery] int tamanoPagina = 50,
+            [FromQuery] string? busqueda = null)
         {
-            // Usamos el servicio de clientes que ya tienes inyectado arriba
-            // NOTA: Asumo que tu interfaz IClientesService tiene un método para listar.
-            // Si tu método se llama diferente (ej: ListarClientesAsync), cambia el nombre aquí abajo.
-            var clientes = await _clientesService.ObtenerTodosLosClientesAsync();
-            return Ok(clientes);
+            var resultado = await _clientesService.ObtenerTodosLosClientesAsync(
+                pagina, tamanoPagina, busqueda);
+            return Ok(resultado);
         }
     }
     

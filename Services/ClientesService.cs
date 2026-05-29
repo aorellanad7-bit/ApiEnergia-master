@@ -1,7 +1,9 @@
+using System.Security.Cryptography;
 using ApiEnergia.Auth;
 using ApiEnergia.DTOs;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace ApiEnergia.Services
 {
@@ -16,12 +18,35 @@ namespace ApiEnergia.Services
             _passwordHasher = passwordHasher;
         }
 
+        // Máximo de reintentos al generar un número de contador para tolerar
+        // colisiones con valores ya existentes (extremadamente improbables con
+        // 8 hex chars = 16^8 combinaciones, pero defensivo).
+        private const int MaxIntentosNumeroContador = 5;
+
         public async Task<CrearClienteConContadorResponse> CrearClienteConContadorAsync(CrearClienteConContadorRequest request)
         {
             if (request is null)
                 throw new ArgumentNullException(nameof(request));
 
-            var cliente = (await _unitOfWork.Clientes.FindAsync(c => c.Dpi == request.Dpi)).FirstOrDefault();
+            // Si ya existe un usuario con el DPI como nombre_usuario, abortamos
+            // antes de tocar la BD. Sin esta verificación previa el INSERT en
+            // usuario_acceso_energia tronaría con error 1062 por el UNIQUE
+            // (uk_usuario_acceso_nombre_usuario), pero el cliente recibiría un
+            // 500 sin diagnóstico útil.
+            bool usuarioYaExiste = await _unitOfWork.Accesos
+                .AnyAsync(u => u.NombreUsuario == request.Dpi);
+            if (usuarioYaExiste)
+                throw new InvalidOperationException(
+                    $"Ya existe un usuario de portal con DPI '{request.Dpi}'.");
+
+            // Toda la operación va dentro de una transacción explícita: si
+            // cualquiera de los tres INSERTs (cliente, contador, usuario)
+            // falla, hacemos rollback y la BD queda como estaba. Antes,
+            // tras el primer SaveChangesAsync el cliente ya quedaba persistido
+            // aunque la creación del contador o del usuario fallara después.
+            await using var trx = await _unitOfWork.BeginTransactionAsync();
+
+            var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == request.Dpi);
             if (cliente is null)
             {
                 cliente = new ClienteLuz
@@ -33,11 +58,15 @@ namespace ApiEnergia.Services
                 };
 
                 await _unitOfWork.Clientes.AddAsync(cliente);
+                // Necesitamos el IdCliente generado para asociarlo al usuario.
                 await _unitOfWork.SaveChangesAsync();
             }
 
-            var numeroContador = GenerarNumeroContador();
-            var passwordTemporal = $"Temp{request.Dpi.Substring(0, 4)}!";
+            var numeroContador = await GenerarNumeroContadorUnicoAsync();
+            // Password temporal aleatorio (no derivable del DPI). Solo se devuelve
+            // una vez en la respuesta para que el operador de agencia se lo
+            // entregue al cliente; en BD se guarda únicamente el hash BCrypt.
+            var passwordTemporal = GenerarPasswordTemporalSeguro();
             var contador = new ContadorEnergia
             {
                 NumeroContador = numeroContador,
@@ -58,22 +87,137 @@ namespace ApiEnergia.Services
             await _unitOfWork.Contadores.AddAsync(contador);
 
             await _unitOfWork.SaveChangesAsync();
+            await trx.CommitAsync();
 
             return new CrearClienteConContadorResponse(numeroContador, request.Dpi, passwordTemporal);
         }
-        public async Task<IReadOnlyList<ClienteLuz>> ObtenerTodosLosClientesAsync()
+        // Límites de paginación. Si el frontend pide algo fuera de rango,
+        // normalizamos en lugar de tronar para que la API sea tolerante.
+        private const int TamanoPaginaMinimo = 1;
+        private const int TamanoPaginaMaximo = 200;
+        private const int TamanoPaginaPorDefecto = 50;
+
+        public async Task<PaginadoDto<ClienteResumenDto>> ObtenerTodosLosClientesAsync(
+            int pagina = 1,
+            int tamanoPagina = TamanoPaginaPorDefecto,
+            string? busqueda = null)
         {
-            // Usamos la unidad de trabajo y el repositorio de clientes.
-            // Pasamos una expresión lambda vacía (c => true) para que traiga TODOS sin filtrar.
-            var clientes = await _unitOfWork.Clientes.FindAsync(c => true);
-            
-            // Lo convertimos a una lista de solo lectura para cumplir con la firma
-            return clientes.ToList().AsReadOnly();
+            // Normalizar parámetros: pagina ≥ 1 y tamaño dentro de rango seguro.
+            if (pagina < 1) pagina = 1;
+            if (tamanoPagina < TamanoPaginaMinimo) tamanoPagina = TamanoPaginaMinimo;
+            if (tamanoPagina > TamanoPaginaMaximo) tamanoPagina = TamanoPaginaMaximo;
+
+            // IQueryable<T> permite componer la consulta en SQL: el COUNT, el
+            // filtro y el SKIP/TAKE viajan a MySQL en lugar de cargar todo a
+            // memoria (que es lo que hacía la versión anterior con FindAsync).
+            var query = _unitOfWork.Clientes.Query();
+
+            if (!string.IsNullOrWhiteSpace(busqueda))
+            {
+                var termino = busqueda.Trim();
+                // EF.Core traduce Contains a LIKE '%termino%' y MySQL en
+                // collation utf8mb4_0900_ai_ci ya hace match accent/case-
+                // insensitive, así que no necesitamos tocar el casing.
+                query = query.Where(c =>
+                    EF.Functions.Like(c.Dpi, $"%{termino}%") ||
+                    EF.Functions.Like(c.Nombre, $"%{termino}%") ||
+                    EF.Functions.Like(c.Apellido, $"%{termino}%") ||
+                    EF.Functions.Like(c.Correo, $"%{termino}%"));
+            }
+
+            var totalRegistros = await query.CountAsync();
+            var totalPaginas = totalRegistros == 0
+                ? 0
+                : (int)Math.Ceiling(totalRegistros / (double)tamanoPagina);
+
+            var items = await query
+                .OrderBy(c => c.IdCliente)
+                .Skip((pagina - 1) * tamanoPagina)
+                .Take(tamanoPagina)
+                .Select(c => new ClienteResumenDto(
+                    c.IdCliente,
+                    c.Dpi,
+                    c.Nombre,
+                    c.Apellido,
+                    c.Correo,
+                    c.Contadores.Count()))
+                .ToListAsync();
+
+            return new PaginadoDto<ClienteResumenDto>(
+                Pagina: pagina,
+                TamanoPagina: tamanoPagina,
+                TotalRegistros: totalRegistros,
+                TotalPaginas: totalPaginas,
+                Items: items);
+        }
+
+        /// <summary>
+        /// Genera un número de contador único reintentando hasta
+        /// <see cref="MaxIntentosNumeroContador"/> veces si por casualidad
+        /// colisiona con uno existente. Si se agotan los intentos lanza
+        /// excepción para que el flujo aborte limpiamente.
+        /// </summary>
+        private async Task<string> GenerarNumeroContadorUnicoAsync()
+        {
+            for (int intento = 0; intento < MaxIntentosNumeroContador; intento++)
+            {
+                var candidato = GenerarNumeroContador();
+                bool colision = await _unitOfWork.Contadores
+                    .AnyAsync(c => c.NumeroContador == candidato);
+                if (!colision)
+                    return candidato;
+            }
+
+            throw new InvalidOperationException(
+                $"No se pudo generar un número de contador único tras {MaxIntentosNumeroContador} intentos.");
         }
 
         private static string GenerarNumeroContador()
         {
             return Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        }
+
+        // Alfabetos por categoría. Excluimos caracteres ambiguos (0/O, 1/l/I)
+        // para que el password temporal sea fácil de dictar por teléfono y
+        // de tipear sin confundirse en agencia.
+        private const string LetrasMayusculas = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+        private const string LetrasMinusculas = "abcdefghijkmnpqrstuvwxyz";
+        private const string Digitos = "23456789";
+        private const string Simbolos = "!@#$%*?";
+        private const int LongitudPasswordTemporal = 12;
+
+        /// <summary>
+        /// Genera un password temporal con entropía criptográfica. Garantiza
+        /// al menos un carácter de cada categoría (mayúscula, minúscula,
+        /// dígito y símbolo) y mezcla la posición de cada carácter usando
+        /// <see cref="RandomNumberGenerator"/> para que no haya patrón
+        /// derivable del DPI ni del momento de generación.
+        /// </summary>
+        private static string GenerarPasswordTemporalSeguro()
+        {
+            var caracteres = new char[LongitudPasswordTemporal];
+
+            caracteres[0] = LetrasMayusculas[RandomNumberGenerator.GetInt32(LetrasMayusculas.Length)];
+            caracteres[1] = LetrasMinusculas[RandomNumberGenerator.GetInt32(LetrasMinusculas.Length)];
+            caracteres[2] = Digitos[RandomNumberGenerator.GetInt32(Digitos.Length)];
+            caracteres[3] = Simbolos[RandomNumberGenerator.GetInt32(Simbolos.Length)];
+
+            const string todos = LetrasMayusculas + LetrasMinusculas + Digitos + Simbolos;
+            for (int i = 4; i < LongitudPasswordTemporal; i++)
+            {
+                caracteres[i] = todos[RandomNumberGenerator.GetInt32(todos.Length)];
+            }
+
+            // Fisher–Yates con RandomNumberGenerator para mezclar las posiciones
+            // fijas (mayúscula, minúscula, dígito, símbolo) con el resto y que
+            // un atacante no pueda asumir la categoría por índice.
+            for (int i = caracteres.Length - 1; i > 0; i--)
+            {
+                int j = RandomNumberGenerator.GetInt32(i + 1);
+                (caracteres[i], caracteres[j]) = (caracteres[j], caracteres[i]);
+            }
+
+            return new string(caracteres);
         }
     }
 }

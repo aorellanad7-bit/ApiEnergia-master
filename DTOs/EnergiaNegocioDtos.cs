@@ -54,12 +54,24 @@ namespace ApiEnergia.DTOs
     /// <summary>
     /// Resultado consolidado del procesamiento de un pago externo (Banco) o interno (Agencia).
     /// </summary>
+    /// <param name="CambioADevolver">
+    /// Solo aplica al canal "OFICINA_EMPRESA": efectivo recibido por encima
+    /// del saldo total que el cajero debe devolver al cliente. En pagos
+    /// bancarios es siempre 0 porque el banco cobra el saldo exacto.
+    /// </param>
+    /// <param name="YaProcesado">
+    /// true cuando el pago se rechazó porque ya fue aplicado previamente con
+    /// la misma referencia bancaria (idempotencia). Permite al banco distinguir
+    /// "callback duplicado" de un error real y no marcar el débito como fallido.
+    /// </param>
     public record ResultadoPagoDto(
         bool Exito,
         string? Mensaje,
         decimal MontoAplicado,
         decimal SaldoRestante,
-        int RecibosAfectados);
+        int RecibosAfectados,
+        decimal CambioADevolver = 0m,
+        bool YaProcesado = false);
 
     // ── Consultas del portal de cliente ──────────────────────────────────────
 

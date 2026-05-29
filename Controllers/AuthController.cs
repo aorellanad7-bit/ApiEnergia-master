@@ -93,7 +93,11 @@ namespace ApiEnergia.Controllers
 
         private string GenerarToken(string usuario, string rol)
         {
-            var secret = _configuration["Jwt:Key"] ?? "DEV_SECRET_KEY";
+            // Jwt:Key se valida en Program.cs al arrancar (presencia + longitud
+            // mínima). Si llegamos aquí sin valor es un error de configuración
+            // grave: preferimos fallar antes que firmar con un default inseguro.
+            var secret = _configuration["Jwt:Key"]
+                ?? throw new InvalidOperationException("Jwt:Key no está configurado.");
             var issuer = _configuration["Jwt:Issuer"] ?? "ApiEnergia";
             var audience = _configuration["Jwt:Audience"] ?? "ApiEnergia";
 

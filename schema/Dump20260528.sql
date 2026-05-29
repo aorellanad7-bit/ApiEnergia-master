@@ -27,10 +27,10 @@ CREATE TABLE `cliente_luz` (
   `dpi` varchar(20) NOT NULL,
   `nombre` varchar(100) NOT NULL,
   `apellido` varchar(100) NOT NULL,
-  `correo_electronico` varchar(100) DEFAULT NULL,
+  `correo` varchar(150) NOT NULL,
   PRIMARY KEY (`id_cliente`),
   UNIQUE KEY `dpi` (`dpi`)
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=108 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -45,7 +45,7 @@ CREATE TABLE `contador_energia` (
   `id_cliente` int NOT NULL,
   `direccion_inmueble` varchar(255) NOT NULL,
   `fecha_instalacion` datetime DEFAULT CURRENT_TIMESTAMP,
-  `estado` enum('ACTIVO','CORTADO') DEFAULT 'ACTIVO',
+  `estado` enum('ACTIVO','CORTADO','SUSPENDIDO') NOT NULL DEFAULT 'ACTIVO',
   PRIMARY KEY (`numero_contador`),
   KEY `id_cliente` (`id_cliente`),
   CONSTRAINT `contador_energia_ibfk_1` FOREIGN KEY (`id_cliente`) REFERENCES `cliente_luz` (`id_cliente`)
@@ -63,11 +63,12 @@ CREATE TABLE `lectura_contador` (
   `id_lectura` int NOT NULL AUTO_INCREMENT,
   `numero_contador` varchar(30) NOT NULL,
   `kilovatios_consumidos` int NOT NULL,
-  `fecha_lectura` date NOT NULL,
+  `fecha_lectura` datetime NOT NULL,
   PRIMARY KEY (`id_lectura`),
   KEY `numero_contador` (`numero_contador`),
+  KEY `ix_lectura_contador_fecha` (`fecha_lectura`),
   CONSTRAINT `lectura_contador_ibfk_1` FOREIGN KEY (`numero_contador`) REFERENCES `contador_energia` (`numero_contador`)
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=17 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -86,11 +87,13 @@ CREATE TABLE `pagos_procesados` (
   `canal_pago` enum('OFICINA_EMPRESA','SISTEMA_BANCARIO') NOT NULL,
   `codigo_autorizacion_banco` varchar(50) DEFAULT NULL,
   PRIMARY KEY (`id_pago`),
+  UNIQUE KEY `uk_pagos_procesados_autorizacion_recibo` (`codigo_autorizacion_banco`,`id_recibo`),
   KEY `numero_contador` (`numero_contador`),
   KEY `id_recibo` (`id_recibo`),
+  KEY `ix_pagos_procesados_codigo_autorizacion` (`codigo_autorizacion_banco`),
   CONSTRAINT `pagos_procesados_ibfk_1` FOREIGN KEY (`numero_contador`) REFERENCES `contador_energia` (`numero_contador`),
   CONSTRAINT `pagos_procesados_ibfk_2` FOREIGN KEY (`id_recibo`) REFERENCES `recibo_luz` (`id_recibo`)
-) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=28 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -106,14 +109,15 @@ CREATE TABLE `recibo_luz` (
   `id_lectura` int NOT NULL,
   `monto_total` decimal(10,2) NOT NULL,
   `saldo_pendiente` decimal(10,2) NOT NULL DEFAULT '0.00',
-  `fecha_emision` date NOT NULL,
-  `estado` enum('PENDIENTE','PAGADO','VENCIDO') DEFAULT 'PENDIENTE',
+  `fecha_emision` datetime NOT NULL,
+  `estado` enum('Pendiente','Pagado','Vencido') NOT NULL DEFAULT 'Pendiente',
   PRIMARY KEY (`id_recibo`),
   KEY `numero_contador` (`numero_contador`),
   KEY `id_lectura` (`id_lectura`),
+  KEY `ix_recibo_luz_estado` (`estado`),
   CONSTRAINT `recibo_luz_ibfk_1` FOREIGN KEY (`numero_contador`) REFERENCES `contador_energia` (`numero_contador`),
   CONSTRAINT `recibo_luz_ibfk_2` FOREIGN KEY (`id_lectura`) REFERENCES `lectura_contador` (`id_lectura`)
-) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=17 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -134,7 +138,7 @@ CREATE TABLE `usuario_acceso_energia` (
   UNIQUE KEY `nombre_usuario` (`nombre_usuario`),
   KEY `id_cliente` (`id_cliente`),
   CONSTRAINT `usuario_acceso_energia_ibfk_1` FOREIGN KEY (`id_cliente`) REFERENCES `cliente_luz` (`id_cliente`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -146,4 +150,4 @@ CREATE TABLE `usuario_acceso_energia` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-05-22 22:13:46
+-- Dump completed on 2026-05-28 23:13:03

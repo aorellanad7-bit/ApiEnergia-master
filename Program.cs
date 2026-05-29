@@ -65,6 +65,14 @@ namespace ApiEnergia
             builder.Services.AddScoped<IClientesService, ClientesService>();
             builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 
+            // Bind + validación de TarifaOptions. ValidateOnStart hace que un
+            // PrecioPorKwh inválido (ej. 0 o negativo) tumbe el arranque, así
+            // no se descubre al primer registro de lectura en producción.
+            builder.Services.AddOptions<TarifaOptions>()
+                .Bind(builder.Configuration.GetSection(TarifaOptions.SectionName))
+                .ValidateDataAnnotations()
+                .ValidateOnStart();
+
             // HttpClient con el que el portal del cliente orquesta el cobro contra
             // el API Banco (endpoint POST api/Pagos/ejecutar). La URL del banco se
             // configura con BancoApi:Url en appsettings; si no está, fallamos rápido
@@ -80,20 +88,43 @@ namespace ApiEnergia
                 client.Timeout = TimeSpan.FromSeconds(30);
             });
 
-            // 5. Autenticación JWT (Específico de Energía para el Portal de Clientes)
+            // 5. Autenticación JWT (Específico de Energía para el Portal de Clientes).
+            //    Exigimos Jwt:Key configurado y con al menos 32 bytes (256 bits)
+            //    para HMAC-SHA256. Si no, fallamos en el arranque para no firmar
+            //    tokens con un secreto débil o un default público en producción.
+            var jwtKey = builder.Configuration["Jwt:Key"];
+            if (string.IsNullOrWhiteSpace(jwtKey))
+                throw new InvalidOperationException(
+                    "Falta configurar Jwt:Key en appsettings (clave simétrica para firmar JWT).");
+
+            var jwtKeyBytes = Encoding.UTF8.GetBytes(jwtKey);
+            if (jwtKeyBytes.Length < 32)
+                throw new InvalidOperationException(
+                    $"Jwt:Key es demasiado corta ({jwtKeyBytes.Length} bytes). " +
+                    "Debe tener al menos 32 bytes (256 bits) para HMAC-SHA256.");
+
+            // Si el placeholder de appsettings llegó intacto al runtime es señal
+            // de que nadie sobreescribió la variable en el ambiente real.
+            if (jwtKey.Equals("REEMPLAZAR_EN_AZURE", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Jwt:Key tiene el placeholder 'REEMPLAZAR_EN_AZURE'. " +
+                    "Configura una clave real en variables de entorno o App Settings.");
+
+            var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "ApiEnergia";
+            var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "ApiEnergia";
+
             builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 .AddJwtBearer(options =>
                 {
-                    var secret = builder.Configuration["Jwt:Key"] ?? "DEV_SECRET_KEY";
                     options.TokenValidationParameters = new TokenValidationParameters
                     {
                         ValidateIssuer = true,
                         ValidateAudience = true,
                         ValidateLifetime = true,
                         ValidateIssuerSigningKey = true,
-                        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "ApiEnergia",
-                        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "ApiEnergia",
-                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))
+                        ValidIssuer = jwtIssuer,
+                        ValidAudience = jwtAudience,
+                        IssuerSigningKey = new SymmetricSecurityKey(jwtKeyBytes)
                     };
                 });
 

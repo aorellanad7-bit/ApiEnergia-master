@@ -2,15 +2,12 @@
 -- schema_energia.sql
 -- ---------------------------------------------------------------------------
 -- Schema canónico de la base `api_energia`. Alineado 1:1 con
--- ApiEnergia.DbContext.EnergiaDbContext y los modelos de la API.
+-- ApiEnergia.DbContext.EnergiaDbContext, los modelos de la API y el dump
+-- vigente en producción (Dump20260528.sql).
 --
 -- Idempotente: usa CREATE TABLE IF NOT EXISTS, así que se puede correr varias
 -- veces sin perder datos. Para limpiar y reconstruir desde cero, ejecuta
 -- primero cleanup_energia.sql.
---
--- Para alinear una base ya existente que tenga la estructura legacy
--- (p.ej. `correo_electronico`, `fecha_emision DATE`, ENUM con MAYÚSCULAS),
--- ejecutar migrate_schema_v2.sql en lugar de este archivo.
 -- ===========================================================================
 
 CREATE DATABASE IF NOT EXISTS `api_energia`
@@ -33,12 +30,15 @@ CREATE TABLE IF NOT EXISTS `cliente_luz` (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 -- ── contador_energia ───────────────────────────────────────────────────────
+-- estado: ENUM con los valores que la lógica de negocio admite. El modelo C#
+-- lo expone como string, pero MySQL valida que sólo se inserten valores
+-- definidos aquí (defensa de integridad a nivel de BD).
 CREATE TABLE IF NOT EXISTS `contador_energia` (
-    `numero_contador`     VARCHAR(30)             NOT NULL,
-    `id_cliente`          INT                     NOT NULL,
-    `direccion_inmueble`  VARCHAR(255)            NOT NULL,
-    `fecha_instalacion`   DATETIME                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `estado`              VARCHAR(20)             NOT NULL DEFAULT 'ACTIVO',
+    `numero_contador`     VARCHAR(30)                                NOT NULL,
+    `id_cliente`          INT                                        NOT NULL,
+    `direccion_inmueble`  VARCHAR(255)                               NOT NULL,
+    `fecha_instalacion`   DATETIME                                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `estado`              ENUM('ACTIVO','CORTADO','SUSPENDIDO')      NOT NULL DEFAULT 'ACTIVO',
     PRIMARY KEY (`numero_contador`),
     KEY `ix_contador_energia_id_cliente` (`id_cliente`),
     CONSTRAINT `fk_contador_energia__cliente_luz`

@@ -104,9 +104,23 @@ namespace ApiEnergia.Controllers
 
             if (resultado.Exito)
             {
-                _logger.LogInformation(
-                    "Callback Banco APLICADO | contador={Contador} aplicado={Aplicado} saldoRestante={Saldo} recibosAfectados={Recibos}",
-                    dto.NumeroContador, resultado.MontoAplicado, resultado.SaldoRestante, resultado.RecibosAfectados);
+                if (resultado.YaProcesado)
+                {
+                    // Idempotencia: el banco reintentó un callback que ya
+                    // habíamos aplicado. Respondemos 200 OK para que el banco
+                    // marque el débito como notificado y deje de reintentar,
+                    // pero lo logueamos distinto para no confundirlo con una
+                    // aplicación nueva en métricas.
+                    _logger.LogInformation(
+                        "Callback Banco IDEMPOTENTE | contador={Contador} referencia={Referencia} (ya estaba aplicado)",
+                        dto.NumeroContador, dto.ReferenciaBanco);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "Callback Banco APLICADO | contador={Contador} aplicado={Aplicado} saldoRestante={Saldo} recibosAfectados={Recibos}",
+                        dto.NumeroContador, resultado.MontoAplicado, resultado.SaldoRestante, resultado.RecibosAfectados);
+                }
                 return Ok(resultado);
             }
 
@@ -114,8 +128,11 @@ namespace ApiEnergia.Controllers
                 "Callback Banco RECHAZADO | contador={Contador} monto={Monto} motivo={Motivo}",
                 dto.NumeroContador, dto.Monto, resultado.Mensaje);
 
-            // Si la causa es contador inexistente → 404, lo demás 400
-            if ((resultado.Mensaje ?? string.Empty).Contains("no existe", StringComparison.OrdinalIgnoreCase))
+            // Mapear contador inexistente a 404 vs el resto de errores a 400.
+            // Antes hacíamos string-match contra "no existe" en el mensaje, lo
+            // cual era frágil; ahora consultamos el repositorio directamente.
+            var contadorExiste = await _energiaService.ContadorExisteAsync(dto.NumeroContador);
+            if (!contadorExiste)
                 return NotFound(resultado);
 
             return BadRequest(resultado);

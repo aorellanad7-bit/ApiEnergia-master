@@ -56,5 +56,12 @@ namespace ApiEnergia.Interfaces
         /// que un cliente cobre / pague un contador que no es suyo.
         /// </summary>
         Task<bool> ContadorPerteneceAClienteAsync(string dpi, string numeroContador);
+
+        /// <summary>
+        /// Verifica que un contador exista en el sistema. Lo usa el callback
+        /// bancario para mapear errores a 404 (sin existencia) vs 400 (otro
+        /// motivo) sin tener que hacer string-matching del mensaje.
+        /// </summary>
+        Task<bool> ContadorExisteAsync(string numeroContador);
     }
 }

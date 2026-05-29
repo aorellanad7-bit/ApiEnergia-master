@@ -50,5 +50,15 @@ namespace ApiEnergia.Repositories
         {
             return await _set.Where(predicate).ToListAsync();
         }
+
+        public Task<bool> AnyAsync(Expression<Func<T, bool>> predicate)
+        {
+            return _set.AnyAsync(predicate);
+        }
+
+        public Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate)
+        {
+            return _set.FirstOrDefaultAsync(predicate);
+        }
     }
 }
