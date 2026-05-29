@@ -39,55 +39,61 @@ namespace ApiEnergia.Services
                 throw new InvalidOperationException(
                     $"Ya existe un usuario de portal con DPI '{request.Dpi}'.");
 
-            // Toda la operación va dentro de una transacción explícita: si
-            // cualquiera de los tres INSERTs (cliente, contador, usuario)
-            // falla, hacemos rollback y la BD queda como estaba. Antes,
-            // tras el primer SaveChangesAsync el cliente ya quedaba persistido
-            // aunque la creación del contador o del usuario fallara después.
-            await using var trx = await _unitOfWork.BeginTransactionAsync();
+            // Password temporal aleatorio (no derivable del DPI). Lo generamos
+            // FUERA de la transacción porque la lambda puede ejecutarse más de
+            // una vez si la estrategia de reintentos lo decide; no queremos
+            // que el password cambie entre intentos ni regenerarlo en vano.
+            var passwordTemporal = GenerarPasswordTemporalSeguro();
+            var passwordHash = _passwordHasher.Hash(passwordTemporal);
 
-            var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == request.Dpi);
-            if (cliente is null)
+            // Toda la operación va dentro de una transacción explícita
+            // envuelta en la IExecutionStrategy del provider: si cualquier
+            // INSERT (cliente, contador, usuario) falla, hacemos rollback.
+            // Sin la estrategia, MySqlRetryingExecutionStrategy + transacción
+            // explícita son incompatibles y el INSERT lanza:
+            //   "does not support user-initiated transactions".
+            string numeroContador = string.Empty;
+
+            await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
-                cliente = new ClienteLuz
+                var cliente = await _unitOfWork.Clientes.FirstOrDefaultAsync(c => c.Dpi == request.Dpi);
+                if (cliente is null)
                 {
-                    Dpi = request.Dpi,
-                    Nombre = request.Nombre,
-                    Apellido = request.Apellido,
-                    Correo = request.Correo
+                    cliente = new ClienteLuz
+                    {
+                        Dpi = request.Dpi,
+                        Nombre = request.Nombre,
+                        Apellido = request.Apellido,
+                        Correo = request.Correo
+                    };
+
+                    await _unitOfWork.Clientes.AddAsync(cliente);
+                    // Necesitamos el IdCliente generado para asociarlo al usuario.
+                    await _unitOfWork.SaveChangesAsync();
+                }
+
+                numeroContador = await GenerarNumeroContadorUnicoAsync();
+                var contador = new ContadorEnergia
+                {
+                    NumeroContador = numeroContador,
+                    DireccionInmueble = request.DireccionInmueble,
+                    FechaInstalacion = DateTime.UtcNow,
+                    Estado = "ACTIVO",
+                    Cliente = cliente
                 };
 
-                await _unitOfWork.Clientes.AddAsync(cliente);
-                // Necesitamos el IdCliente generado para asociarlo al usuario.
+                await _unitOfWork.Accesos.AddAsync(new UsuarioAccesoEnergia
+                {
+                    IdCliente = cliente.IdCliente,
+                    NombreUsuario = request.Dpi,
+                    PasswordHash = passwordHash,
+                    Rol = "CLIENTE"
+                });
+
+                await _unitOfWork.Contadores.AddAsync(contador);
+
                 await _unitOfWork.SaveChangesAsync();
-            }
-
-            var numeroContador = await GenerarNumeroContadorUnicoAsync();
-            // Password temporal aleatorio (no derivable del DPI). Solo se devuelve
-            // una vez en la respuesta para que el operador de agencia se lo
-            // entregue al cliente; en BD se guarda únicamente el hash BCrypt.
-            var passwordTemporal = GenerarPasswordTemporalSeguro();
-            var contador = new ContadorEnergia
-            {
-                NumeroContador = numeroContador,
-                DireccionInmueble = request.DireccionInmueble,
-                FechaInstalacion = DateTime.UtcNow,
-                Estado = "ACTIVO",
-                Cliente = cliente
-            };
-
-            await _unitOfWork.Accesos.AddAsync(new UsuarioAccesoEnergia
-            {
-                IdCliente = cliente.IdCliente,
-                NombreUsuario = request.Dpi,
-                PasswordHash = _passwordHasher.Hash(passwordTemporal),
-                Rol = "CLIENTE"
             });
-
-            await _unitOfWork.Contadores.AddAsync(contador);
-
-            await _unitOfWork.SaveChangesAsync();
-            await trx.CommitAsync();
 
             return new CrearClienteConContadorResponse(numeroContador, request.Dpi, passwordTemporal);
         }
