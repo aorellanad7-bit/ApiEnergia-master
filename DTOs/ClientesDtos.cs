@@ -12,9 +12,22 @@ namespace ApiEnergia.DTOs
     public record CrearClienteConContadorResponse(string NumeroContador, string UsuarioAsignado, string PasswordTemporal);
 
     /// <summary>
-    /// Vista resumida de un cliente para listados. NO incluye colecciones
-    /// navegables (Contadores) para evitar serializar grafos completos y
-    /// reducir la carga útil enviada al frontend.
+    /// Resumen breve de un contador asociado a un cliente, pensado para
+    /// embeber dentro del listado paginado. Incluye lo que el panel de
+    /// agencia necesita ver de un vistazo (dirección, estado, saldo
+    /// pendiente) sin tener que pedir el detalle por cada cliente.
+    /// </summary>
+    public record ContadorBreveDto(
+        string NumeroContador,
+        string DireccionInmueble,
+        string Estado,
+        decimal SaldoPendiente);
+
+    /// <summary>
+    /// Vista resumida de un cliente para listados, con la lista de sus
+    /// contadores asociados (datos relevantes para agencia: número,
+    /// dirección, estado y saldo). NO incluye otras colecciones EF
+    /// para evitar serializar grafos completos.
     /// </summary>
     public record ClienteResumenDto(
         int IdCliente,
@@ -22,7 +35,9 @@ namespace ApiEnergia.DTOs
         string Nombre,
         string Apellido,
         string Correo,
-        int CantidadContadores);
+        int CantidadContadores,
+        decimal SaldoTotalPendiente,
+        IReadOnlyList<ContadorBreveDto> Contadores);
 
     /// <summary>
     /// Sobre genérico de paginación. Devuelve la página solicitada junto con

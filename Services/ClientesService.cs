@@ -130,18 +130,85 @@ namespace ApiEnergia.Services
                 ? 0
                 : (int)Math.Ceiling(totalRegistros / (double)tamanoPagina);
 
-            var items = await query
+            // 1) Cargar la página de clientes (sin contadores todavía)
+            var clientesPagina = await query
                 .OrderBy(c => c.IdCliente)
                 .Skip((pagina - 1) * tamanoPagina)
                 .Take(tamanoPagina)
-                .Select(c => new ClienteResumenDto(
+                .Select(c => new
+                {
                     c.IdCliente,
                     c.Dpi,
                     c.Nombre,
                     c.Apellido,
-                    c.Correo,
-                    c.Contadores.Count()))
+                    c.Correo
+                })
                 .ToListAsync();
+
+            if (clientesPagina.Count == 0)
+            {
+                return new PaginadoDto<ClienteResumenDto>(
+                    Pagina: pagina,
+                    TamanoPagina: tamanoPagina,
+                    TotalRegistros: totalRegistros,
+                    TotalPaginas: totalPaginas,
+                    Items: Array.Empty<ClienteResumenDto>());
+            }
+
+            // 2) Cargar los contadores de TODOS los clientes de la página en
+            //    una sola query (evita N+1).
+            var idsClientes = clientesPagina.Select(c => c.IdCliente).ToList();
+            var contadores = await _unitOfWork.Contadores.Query()
+                .Where(c => idsClientes.Contains(c.IdCliente))
+                .Select(c => new
+                {
+                    c.IdCliente,
+                    c.NumeroContador,
+                    c.DireccionInmueble,
+                    c.Estado
+                })
+                .ToListAsync();
+
+            // 3) Cargar los recibos pendientes de TODOS los contadores de la
+            //    página en una sola query y agruparlos por contador para
+            //    sumarles el saldo.
+            var numerosContador = contadores.Select(c => c.NumeroContador).ToList();
+            var saldosPorContador = numerosContador.Count == 0
+                ? new Dictionary<string, decimal>()
+                : await _unitOfWork.Recibos.Query()
+                    .Where(r => numerosContador.Contains(r.NumeroContador)
+                             && r.Estado == ReciboEstado.Pendiente)
+                    .GroupBy(r => r.NumeroContador)
+                    .Select(g => new { Numero = g.Key, Saldo = g.Sum(r => r.SaldoPendiente) })
+                    .ToDictionaryAsync(x => x.Numero, x => x.Saldo);
+
+            var contadoresPorCliente = contadores
+                .GroupBy(c => c.IdCliente)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(c => new ContadorBreveDto(
+                            NumeroContador: c.NumeroContador,
+                            DireccionInmueble: c.DireccionInmueble,
+                            Estado: c.Estado,
+                            SaldoPendiente: saldosPorContador.GetValueOrDefault(c.NumeroContador, 0m)))
+                         .OrderBy(c => c.NumeroContador)
+                         .ToList());
+
+            var items = clientesPagina.Select(c =>
+            {
+                var contadoresCliente = contadoresPorCliente.GetValueOrDefault(
+                    c.IdCliente,
+                    new List<ContadorBreveDto>());
+                return new ClienteResumenDto(
+                    IdCliente: c.IdCliente,
+                    Dpi: c.Dpi,
+                    Nombre: c.Nombre,
+                    Apellido: c.Apellido,
+                    Correo: c.Correo,
+                    CantidadContadores: contadoresCliente.Count,
+                    SaldoTotalPendiente: contadoresCliente.Sum(x => x.SaldoPendiente),
+                    Contadores: contadoresCliente);
+            }).ToList();
 
             return new PaginadoDto<ClienteResumenDto>(
                 Pagina: pagina,
