@@ -110,9 +110,14 @@ CREATE TABLE IF NOT EXISTS `pagos_procesados` (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 -- ── usuario_acceso_energia ─────────────────────────────────────────────────
+-- id_cliente es NULLABLE: los usuarios ADMIN_AGENCIA no representan a un
+-- cuentahabiente real y se guardan con id_cliente=NULL. Solo los usuarios con
+-- rol CLIENTE apuntan a una fila de cliente_luz. ON DELETE SET NULL evita que
+-- borrar un cliente rompa el usuario admin (defensivo: en la práctica el FK
+-- nunca enlaza al admin con un cliente borrable).
 CREATE TABLE IF NOT EXISTS `usuario_acceso_energia` (
     `id_usuario`     INT          NOT NULL AUTO_INCREMENT,
-    `id_cliente`     INT          NOT NULL,
+    `id_cliente`     INT          DEFAULT NULL,
     `nombre_usuario` VARCHAR(50)  NOT NULL,
     `password_hash`  VARCHAR(255) NOT NULL,
     `rol`            ENUM('ADMIN_AGENCIA','CLIENTE') NOT NULL DEFAULT 'CLIENTE',
@@ -122,6 +127,7 @@ CREATE TABLE IF NOT EXISTS `usuario_acceso_energia` (
     KEY `ix_usuario_acceso_id_cliente` (`id_cliente`),
     CONSTRAINT `fk_usuario_acceso__cliente_luz`
         FOREIGN KEY (`id_cliente`) REFERENCES `cliente_luz` (`id_cliente`)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

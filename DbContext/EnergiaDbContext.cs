@@ -168,9 +168,11 @@ namespace ApiEnergia.DbContext
                 entity.Property(e => e.IdUsuario)
                       .HasColumnName("id_usuario")
                       .ValueGeneratedOnAdd();
+                // id_cliente es OPCIONAL: los usuarios ADMIN_AGENCIA no
+                // representan a un cliente concreto y se guardan con NULL.
+                // Solo los usuarios con rol CLIENTE apuntan a un ClienteLuz.
                 entity.Property(e => e.IdCliente)
-                      .HasColumnName("id_cliente")
-                      .IsRequired();
+                      .HasColumnName("id_cliente");
                 entity.Property(e => e.NombreUsuario)
                       .HasColumnName("nombre_usuario")
                       .HasMaxLength(50)
