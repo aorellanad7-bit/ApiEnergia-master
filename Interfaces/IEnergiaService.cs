@@ -63,5 +63,13 @@ namespace ApiEnergia.Interfaces
         /// motivo) sin tener que hacer string-matching del mensaje.
         /// </summary>
         Task<bool> ContadorExisteAsync(string numeroContador);
+
+        /// <summary>
+        /// Devuelve los totales de recaudación que se muestran en el panel
+        /// de agencia. El campo <c>TotalRecaudado</c> aplica la misma regla
+        /// 95/5 que usa el API Banco y por lo tanto debe coincidir con el
+        /// saldo de la cuenta prestadora de Energía Eléctrica en el banco.
+        /// </summary>
+        Task<TotalesRecaudacionDto> ObtenerTotalesRecaudacionAsync();
     }
 }

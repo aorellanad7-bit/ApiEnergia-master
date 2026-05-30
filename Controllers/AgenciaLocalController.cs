@@ -132,6 +132,20 @@ namespace ApiEnergia.Controllers
                 pagina, tamanoPagina, busqueda);
             return Ok(resultado);
         }
+
+        /// <summary>
+        /// Totales de recaudación para el panel de agencia. El campo
+        /// <c>totalRecaudado</c> aplica la misma regla 95/5 que usa el banco
+        /// y debe coincidir con el saldo de la cuenta prestadora "Energía
+        /// Eléctrica" en el API Banco.
+        /// </summary>
+        [HttpGet("totales")]
+        [ProducesResponseType(typeof(TotalesRecaudacionDto), StatusCodes.Status200OK)]
+        public async Task<IActionResult> ObtenerTotalesRecaudacion()
+        {
+            var totales = await _energiaService.ObtenerTotalesRecaudacionAsync();
+            return Ok(totales);
+        }
     }
     
 }

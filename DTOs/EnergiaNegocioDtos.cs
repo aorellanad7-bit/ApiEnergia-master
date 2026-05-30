@@ -107,4 +107,27 @@ namespace ApiEnergia.DTOs
         DateTime FechaCobro,
         string CanalPago,
         string? CodigoAutorizacionBanco);
+
+    /// <summary>
+    /// Resumen de recaudación que ve el panel de agencia. Útil para conciliar
+    /// con la cuenta interna del banco que recibe el 95% de cada pago
+    /// (en producción: cuenta id=103 del API Banco).
+    /// </summary>
+    /// <param name="TotalRecaudado">
+    /// Monto neto acreditado a la empresa eléctrica por canal bancario,
+    /// aplicando la regla 95/5 que usa el banco. Debe coincidir con el saldo
+    /// de la cuenta prestadora "Energía Eléctrica" en el API Banco.
+    /// </param>
+    /// <param name="TotalCobradoBruto">Suma de todos los pagos aplicados (banco + agencia).</param>
+    /// <param name="TotalCobradoBanco">Suma bruta (100%) de los pagos cobrados por el banco.</param>
+    /// <param name="TotalCobradoAgencia">Suma de pagos en efectivo recibidos en agencia.</param>
+    /// <param name="ComisionesBanco">5% retenido por el banco sobre los pagos bancarios.</param>
+    /// <param name="CantidadPagos">Cantidad total de filas en pagos_procesados.</param>
+    public record TotalesRecaudacionDto(
+        decimal TotalRecaudado,
+        decimal TotalCobradoBruto,
+        decimal TotalCobradoBanco,
+        decimal TotalCobradoAgencia,
+        decimal ComisionesBanco,
+        int CantidadPagos);
 }

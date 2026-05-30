@@ -434,5 +434,78 @@ namespace ApiEnergia.Services
 
             return _unitOfWork.Contadores.AnyAsync(c => c.NumeroContador == numeroContador);
         }
+
+        /// <summary>
+        /// Porcentaje de comisión que retiene el banco. Espejo de
+        /// <c>API_Banco.Application.Common.DistribuidorPago95Por5.PorcentajeComision</c>.
+        /// Si el banco cambia su regla, este número debe seguirlo o el dashboard
+        /// de Energía dejará de cuadrar con el saldo de la cuenta prestadora.
+        /// </summary>
+        private const decimal PorcentajeComisionBanco = 0.05m;
+
+        public async Task<TotalesRecaudacionDto> ObtenerTotalesRecaudacionAsync()
+        {
+            // Traemos solo lo necesario (canal, referencia, monto) para no
+            // materializar entidades completas y evitar tracking innecesario.
+            var pagos = _unitOfWork.Pagos
+                .Query()
+                .AsNoTracking()
+                .Select(p => new
+                {
+                    p.CanalPago,
+                    p.CodigoAutorizacionBanco,
+                    p.Monto
+                });
+            var lista = await pagos.ToListAsync();
+
+            // Pagos en efectivo de agencia: nunca pasan por el banco, así que
+            // no afectan el saldo de la cuenta prestadora.
+            var totalAgencia = lista
+                .Where(p => p.CanalPago == CanalAgencia)
+                .Sum(p => p.Monto);
+
+            // Pagos bancarios: reconstruimos el monto ORIGINAL de cada cobro
+            // del banco agrupando por la referencia bancaria. Un solo cobro
+            // del banco puede aparecer aquí como varias filas (FIFO entre
+            // recibos pendientes), pero la regla 95/5 se aplica sobre el
+            // monto total tal como lo recibió el banco — no fila por fila.
+            var pagosBanco = lista.Where(p => p.CanalPago == CanalBanco).ToList();
+
+            var totalesPorCobroBancario = new List<decimal>();
+            totalesPorCobroBancario.AddRange(pagosBanco
+                .Where(p => !string.IsNullOrEmpty(p.CodigoAutorizacionBanco))
+                .GroupBy(p => p.CodigoAutorizacionBanco!)
+                .Select(g => g.Sum(p => p.Monto)));
+            // Pagos bancarios sin referencia (datos legacy): los tratamos
+            // como un cobro independiente cada uno para no agruparlos por error.
+            totalesPorCobroBancario.AddRange(pagosBanco
+                .Where(p => string.IsNullOrEmpty(p.CodigoAutorizacionBanco))
+                .Select(p => p.Monto));
+
+            decimal totalRecaudado = 0m;
+            decimal totalComisiones = 0m;
+            foreach (var montoCobro in totalesPorCobroBancario)
+            {
+                // Mismo redondeo que API_Banco.Application.Common.DistribuidorPago95Por5:
+                // comision = round(monto * 0.05, 2, AwayFromZero); prestadora = monto - comision.
+                var comision = Math.Round(
+                    montoCobro * PorcentajeComisionBanco,
+                    2,
+                    MidpointRounding.AwayFromZero);
+                totalRecaudado += montoCobro - comision;
+                totalComisiones += comision;
+            }
+
+            var totalBancoBruto = totalesPorCobroBancario.Sum();
+            var totalBruto = totalBancoBruto + totalAgencia;
+
+            return new TotalesRecaudacionDto(
+                TotalRecaudado: totalRecaudado,
+                TotalCobradoBruto: totalBruto,
+                TotalCobradoBanco: totalBancoBruto,
+                TotalCobradoAgencia: totalAgencia,
+                ComisionesBanco: totalComisiones,
+                CantidadPagos: lista.Count);
+        }
     }
 }
