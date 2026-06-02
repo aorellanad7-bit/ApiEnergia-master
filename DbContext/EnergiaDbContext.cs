@@ -105,6 +105,15 @@ namespace ApiEnergia.DbContext
                 entity.Property(e => e.FechaLectura)
                       .HasColumnName("fecha_lectura")
                       .IsRequired();
+                entity.Property(e => e.PeriodoAnio)
+                      .HasColumnName("periodo_anio")
+                      .IsRequired();
+                entity.Property(e => e.PeriodoMes)
+                      .HasColumnName("periodo_mes")
+                      .IsRequired();
+                entity.HasIndex(e => new { e.NumeroContador, e.PeriodoAnio, e.PeriodoMes })
+                      .IsUnique()
+                      .HasDatabaseName("ux_lectura_contador_periodo");
             });
 
             // ── cliente_luz ───────────────────────────────────────────────────

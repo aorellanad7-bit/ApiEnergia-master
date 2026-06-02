@@ -1,3 +1,4 @@
+using System.Globalization;
 using ApiEnergia.DTOs;
 using ApiEnergia.Interfaces;
 using ApiEnergia.Models;
@@ -35,28 +36,40 @@ namespace ApiEnergia.Services
             _tarifa = tarifa;
         }
 
-        public async Task<ReciboLuz> RegistrarLecturaAsync(string numeroContador, int kilovatios)
+        public async Task<ReciboLuz> RegistrarLecturaAsync(
+            string numeroContador, int kilovatios, int anio, int mes)
         {
+            numeroContador = numeroContador?.Trim() ?? string.Empty;
             if (string.IsNullOrWhiteSpace(numeroContador))
                 throw new ArgumentException("NumeroContador es requerido.", nameof(numeroContador));
 
             if (kilovatios <= 0)
                 throw new ArgumentOutOfRangeException(nameof(kilovatios), "Kilovatios debe ser mayor a 0.");
 
+            ValidarPeriodoLectura(anio, mes);
+
             bool contadorExiste = await _unitOfWork.Contadores
                 .AnyAsync(t => t.NumeroContador == numeroContador);
             if (!contadorExiste)
                 throw new InvalidOperationException($"El contador '{numeroContador}' no está registrado.");
 
+            var disponible = await VerificarLecturaPeriodoDisponibleAsync(numeroContador, anio, mes);
+            if (!disponible.Disponible)
+                throw new InvalidOperationException(disponible.Mensaje
+                    ?? $"Ya existe una lectura para el periodo {disponible.PeriodoEtiqueta}.");
+
+            // Fecha de lectura = día 1 del periodo facturado (identifica el mes en BD).
+            var fechaPeriodo = new DateTime(anio, mes, 1, 12, 0, 0, DateTimeKind.Utc);
+
             var lectura = new LecturaContador
             {
                 NumeroContador = numeroContador,
                 KilovatiosConsumidos = kilovatios,
-                FechaLectura = DateTime.UtcNow
+                FechaLectura = fechaPeriodo,
+                PeriodoAnio = anio,
+                PeriodoMes = mes
             };
 
-            // Tarifa configurable vía Tarifa:PrecioPorKwh en appsettings.
-            // Antes estaba hardcoded a 1.50; ahora se puede ajustar sin redeploy.
             var precioPorKwh = _tarifa.CurrentValue.PrecioPorKwh;
             var monto = Math.Round(kilovatios * precioPorKwh, 2, MidpointRounding.AwayFromZero);
             var recibo = new ReciboLuz
@@ -64,16 +77,116 @@ namespace ApiEnergia.Services
                 NumeroContador = numeroContador,
                 MontoTotal = monto,
                 SaldoPendiente = monto,
-                FechaEmision = DateTime.UtcNow,
+                FechaEmision = fechaPeriodo,
                 Estado = ReciboEstado.Pendiente,
                 LecturaContador = lectura
             };
 
-            await _unitOfWork.Lecturas.AddAsync(lectura);
-            await _unitOfWork.Recibos.AddAsync(recibo);
-            await _unitOfWork.SaveChangesAsync();
+            try
+            {
+                await _unitOfWork.Lecturas.AddAsync(lectura);
+                await _unitOfWork.Recibos.AddAsync(recibo);
+                await _unitOfWork.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (EsViolacionLecturaDuplicada(ex))
+            {
+                throw new InvalidOperationException(
+                    $"Ya existe una lectura para el contador '{numeroContador}' en {EtiquetaPeriodo(anio, mes)}.");
+            }
 
             return recibo;
+        }
+
+        public async Task<LecturaPeriodoDisponibleDto> VerificarLecturaPeriodoDisponibleAsync(
+            string numeroContador, int anio, int mes)
+        {
+            numeroContador = numeroContador?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(numeroContador))
+                throw new ArgumentException("NumeroContador es requerido.", nameof(numeroContador));
+
+            ValidarPeriodoLectura(anio, mes);
+            var etiqueta = EtiquetaPeriodo(anio, mes);
+
+            bool contadorExiste = await _unitOfWork.Contadores
+                .AnyAsync(t => t.NumeroContador == numeroContador);
+            if (!contadorExiste)
+            {
+                return new LecturaPeriodoDisponibleDto(
+                    Disponible: false,
+                    PeriodoEtiqueta: etiqueta,
+                    Mensaje: $"El contador '{numeroContador}' no está registrado.");
+            }
+
+            bool yaExiste = await ExisteLecturaEnPeriodoAsync(numeroContador, anio, mes);
+            if (yaExiste)
+            {
+                return new LecturaPeriodoDisponibleDto(
+                    Disponible: false,
+                    PeriodoEtiqueta: etiqueta,
+                    Mensaje: $"Ya se registró una lectura para el contador '{numeroContador}' en {etiqueta}.");
+            }
+
+            return new LecturaPeriodoDisponibleDto(
+                Disponible: true,
+                PeriodoEtiqueta: etiqueta,
+                Mensaje: null);
+        }
+
+        private static void ValidarPeriodoLectura(int anio, int mes)
+        {
+            if (mes < 1 || mes > 12)
+                throw new ArgumentException("El mes debe estar entre 1 y 12.");
+
+            var hoy = DateTime.UtcNow;
+            if (anio > hoy.Year || (anio == hoy.Year && mes > hoy.Month))
+                throw new InvalidOperationException("No se puede registrar una lectura en un periodo futuro.");
+        }
+
+        private async Task<bool> ExisteLecturaEnPeriodoAsync(string numeroContador, int anio, int mes)
+        {
+            var inicioPeriodo = new DateTime(anio, mes, 1, 0, 0, 0, DateTimeKind.Utc);
+            var finPeriodo = inicioPeriodo.AddMonths(1);
+
+            bool enLecturas = await _unitOfWork.Lecturas.Query()
+                .AnyAsync(l =>
+                    l.NumeroContador == numeroContador
+                    && (
+                        (l.PeriodoAnio == anio && l.PeriodoMes == mes)
+                        || (l.PeriodoAnio == 0 && l.FechaLectura >= inicioPeriodo && l.FechaLectura < finPeriodo)
+                    ));
+
+            if (enLecturas) return true;
+
+            // Respaldo: recibo emitido en el mismo periodo (lecturas legacy sin periodo_anio/mes).
+            return await _unitOfWork.Recibos.Query()
+                .AnyAsync(r =>
+                    r.NumeroContador == numeroContador
+                    && r.FechaEmision >= inicioPeriodo
+                    && r.FechaEmision < finPeriodo);
+        }
+
+        private static bool EsViolacionLecturaDuplicada(DbUpdateException ex)
+        {
+            for (var actual = ex.InnerException; actual != null; actual = actual.InnerException)
+            {
+                if (actual is MySqlException mysql && mysql.Number == 1062)
+                {
+                    var msg = mysql.Message ?? string.Empty;
+                    return msg.Contains("ux_lectura_contador_periodo", StringComparison.OrdinalIgnoreCase)
+                        || msg.Contains("numero_contador", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            return false;
+        }
+
+        private static string EtiquetaPeriodo(int anio, int mes)
+        {
+            var cultura = CultureInfo.GetCultureInfo("es-GT");
+            var nombreMes = cultura.DateTimeFormat.GetMonthName(mes);
+            if (string.IsNullOrEmpty(nombreMes))
+                return $"{mes:00}/{anio}";
+            nombreMes = char.ToUpper(nombreMes[0], cultura) + nombreMes[1..];
+            return $"{nombreMes} {anio}";
         }
 
         public async Task<decimal> ConsultarDeudaTotalAsync(string numeroContador)

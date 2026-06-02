@@ -65,7 +65,24 @@ namespace ApiEnergia.DTOs
 
     public record RegistrarLecturaDto(
         [Required, MaxLength(30)] string NumeroContador,
-        [Range(1, int.MaxValue)] int Kilovatios);
+        [Range(1, int.MaxValue)] int Kilovatios,
+        [Range(2000, 2100)] int Anio,
+        [Range(1, 12)] int Mes);
+
+    public record RegistrarLecturaResponseDto(
+        string NumeroContador,
+        int Anio,
+        int Mes,
+        string PeriodoEtiqueta,
+        int Kilovatios,
+        decimal MontoGenerado,
+        decimal SaldoPendiente,
+        int IdRecibo);
+
+    public record LecturaPeriodoDisponibleDto(
+        bool Disponible,
+        string PeriodoEtiqueta,
+        string? Mensaje);
 
     /// <summary>
     /// Resultado consolidado del procesamiento de un pago externo (Banco) o interno (Agencia).

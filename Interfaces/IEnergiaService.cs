@@ -5,7 +5,10 @@ namespace ApiEnergia.Interfaces
 {
     public interface IEnergiaService
     {
-        Task<ReciboLuz> RegistrarLecturaAsync(string numeroContador, int kilovatios);
+        Task<ReciboLuz> RegistrarLecturaAsync(string numeroContador, int kilovatios, int anio, int mes);
+
+        Task<LecturaPeriodoDisponibleDto> VerificarLecturaPeriodoDisponibleAsync(
+            string numeroContador, int anio, int mes);
 
         Task<decimal> ConsultarDeudaTotalAsync(string numeroContador);
 

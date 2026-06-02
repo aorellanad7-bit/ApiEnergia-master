@@ -51,7 +51,10 @@ CREATE TABLE IF NOT EXISTS `lectura_contador` (
     `numero_contador`       VARCHAR(30) NOT NULL,
     `kilovatios_consumidos` INT         NOT NULL,
     `fecha_lectura`         DATETIME    NOT NULL,
+    `periodo_anio`          INT         NOT NULL,
+    `periodo_mes`           INT         NOT NULL,
     PRIMARY KEY (`id_lectura`),
+    UNIQUE KEY `ux_lectura_contador_periodo` (`numero_contador`, `periodo_anio`, `periodo_mes`),
     KEY `ix_lectura_contador_numero_contador` (`numero_contador`),
     KEY `ix_lectura_contador_fecha` (`fecha_lectura`),
     CONSTRAINT `fk_lectura_contador__contador_energia`

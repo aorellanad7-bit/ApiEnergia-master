@@ -29,14 +29,53 @@ namespace ApiEnergia.Controllers
         }
 
         [HttpPost("lectura")]
-        [ProducesResponseType(typeof(ConsultarDeudaResponseDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(RegistrarLecturaResponseDto), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         public async Task<IActionResult> RegistrarLectura([FromBody] RegistrarLecturaDto dto)
         {
             try
             {
-                var recibo = await _energiaService.RegistrarLecturaAsync(dto.NumeroContador, dto.Kilovatios);
-                return Ok(new ConsultarDeudaResponseDto(recibo.NumeroContador, recibo.SaldoPendiente));
+                var recibo = await _energiaService.RegistrarLecturaAsync(
+                    dto.NumeroContador, dto.Kilovatios, dto.Anio, dto.Mes);
+                var cultura = System.Globalization.CultureInfo.GetCultureInfo("es-GT");
+                var mesNombre = cultura.DateTimeFormat.GetMonthName(dto.Mes);
+                mesNombre = char.ToUpper(mesNombre[0]) + mesNombre[1..];
+                return Ok(new RegistrarLecturaResponseDto(
+                    NumeroContador: recibo.NumeroContador,
+                    Anio: dto.Anio,
+                    Mes: dto.Mes,
+                    PeriodoEtiqueta: $"{mesNombre} {dto.Anio}",
+                    Kilovatios: dto.Kilovatios,
+                    MontoGenerado: recibo.MontoTotal,
+                    SaldoPendiente: recibo.SaldoPendiente,
+                    IdRecibo: recibo.IdRecibo));
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { mensaje = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { mensaje = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Indica si el contador puede recibir una lectura en el periodo (año/mes) indicado.
+        /// </summary>
+        [HttpGet("contador/{numeroContador}/lectura-disponible")]
+        [ProducesResponseType(typeof(LecturaPeriodoDisponibleDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        public async Task<IActionResult> VerificarLecturaDisponible(
+            string numeroContador,
+            [FromQuery] int anio,
+            [FromQuery] int mes)
+        {
+            try
+            {
+                var resultado = await _energiaService.VerificarLecturaPeriodoDisponibleAsync(
+                    numeroContador, anio, mes);
+                return Ok(resultado);
             }
             catch (ArgumentException ex)
             {
