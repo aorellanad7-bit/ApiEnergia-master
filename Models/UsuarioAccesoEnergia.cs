@@ -24,5 +24,10 @@ namespace ApiEnergia.Models
         public string NombreUsuario { get; set; } = string.Empty;
         public string PasswordHash { get; set; } = string.Empty;
         public string Rol { get; set; } = string.Empty;
+
+        /// <summary>
+        /// true cuando el cliente debe cambiar la contraseña temporal (alta o reset por agencia).
+        /// </summary>
+        public bool DebeCambiarPassword { get; set; }
     }
 }

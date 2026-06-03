@@ -151,6 +151,27 @@ namespace ApiEnergia.Controllers
         /// Permite a personal de agencia consultar la cuenta de cualquier
         /// cliente por DPI. Útil para atención al público.
         /// </summary>
+        [HttpPost("cliente/{dpi}/reset-password")]
+        [ProducesResponseType(typeof(ResetPasswordClienteResponse), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> ResetearPasswordCliente(string dpi)
+        {
+            try
+            {
+                var respuesta = await _clientesService.ResetearPasswordClienteAsync(dpi);
+                return Ok(respuesta);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { mensaje = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { mensaje = ex.Message });
+            }
+        }
+
         [HttpGet("cliente/{dpi}")]
         [ProducesResponseType(typeof(MiCuentaResponseDto), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]

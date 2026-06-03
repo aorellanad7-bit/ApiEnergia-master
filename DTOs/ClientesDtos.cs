@@ -11,6 +11,8 @@ namespace ApiEnergia.DTOs
 
     public record CrearClienteConContadorResponse(string NumeroContador, string UsuarioAsignado, string PasswordTemporal);
 
+    public record ResetPasswordClienteResponse(string Dpi, string PasswordTemporal);
+
     /// <summary>
     /// Resumen breve de un contador asociado a un cliente, pensado para
     /// embeber dentro del listado paginado. Incluye lo que el panel de

@@ -17,5 +17,10 @@ namespace ApiEnergia.Interfaces
             int pagina = 1,
             int tamanoPagina = 50,
             string? busqueda = null);
+
+        /// <summary>
+        /// Genera una nueva contraseña temporal para el portal del cliente (DPI = usuario).
+        /// </summary>
+        Task<ResetPasswordClienteResponse> ResetearPasswordClienteAsync(string dpi);
     }
 }

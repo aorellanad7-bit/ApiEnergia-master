@@ -194,6 +194,9 @@ namespace ApiEnergia.DbContext
                       .HasColumnName("rol")
                       .HasMaxLength(30)
                       .IsRequired();
+                entity.Property(e => e.DebeCambiarPassword)
+                      .HasColumnName("debe_cambiar_password")
+                      .HasDefaultValue(false);
             });
         }
     }

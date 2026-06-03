@@ -122,7 +122,8 @@ namespace ApiEnergia.DTOs
         string Apellido,
         string Correo,
         decimal SaldoTotalPendiente,
-        IReadOnlyList<ContadorResumenDto> Contadores);
+        IReadOnlyList<ContadorResumenDto> Contadores,
+        bool RequiereCambioPassword = false);
 
     public record ReciboResumenDto(
         int IdRecibo,

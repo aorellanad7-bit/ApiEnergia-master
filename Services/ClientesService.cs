@@ -87,7 +87,8 @@ namespace ApiEnergia.Services
                     IdCliente = cliente.IdCliente,
                     NombreUsuario = request.Dpi,
                     PasswordHash = passwordHash,
-                    Rol = "CLIENTE"
+                    Rol = "CLIENTE",
+                    DebeCambiarPassword = true
                 });
 
                 await _unitOfWork.Contadores.AddAsync(contador);
@@ -97,6 +98,26 @@ namespace ApiEnergia.Services
 
             return new CrearClienteConContadorResponse(numeroContador, request.Dpi, passwordTemporal);
         }
+
+        public async Task<ResetPasswordClienteResponse> ResetearPasswordClienteAsync(string dpi)
+        {
+            dpi = dpi?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(dpi))
+                throw new ArgumentException("El DPI es obligatorio.", nameof(dpi));
+
+            var usuario = await _unitOfWork.Accesos
+                .FirstOrDefaultAsync(u => u.NombreUsuario == dpi && u.Rol == "CLIENTE");
+            if (usuario is null)
+                throw new InvalidOperationException($"No existe un usuario de portal con DPI '{dpi}'.");
+
+            var passwordTemporal = GenerarPasswordTemporalSeguro();
+            usuario.PasswordHash = _passwordHasher.Hash(passwordTemporal);
+            usuario.DebeCambiarPassword = true;
+            await _unitOfWork.SaveChangesAsync();
+
+            return new ResetPasswordClienteResponse(dpi, passwordTemporal);
+        }
+
         // Límites de paginación. Si el frontend pide algo fuera de rango,
         // normalizamos en lugar de tronar para que la API sea tolerante.
         private const int TamanoPaginaMinimo = 1;

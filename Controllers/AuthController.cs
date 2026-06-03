@@ -58,7 +58,8 @@ namespace ApiEnergia.Controllers
             }
 
             var token = GenerarToken(usuario.NombreUsuario, usuario.Rol);
-            return Ok(new LoginResponse(token, usuario.Rol, usuario.NombreUsuario));
+            var requiereCambio = usuario.Rol == "CLIENTE" && usuario.DebeCambiarPassword;
+            return Ok(new LoginResponse(token, usuario.Rol, usuario.NombreUsuario, requiereCambio));
         }
 
         [HttpPost("cambiar-password")]
@@ -86,6 +87,7 @@ namespace ApiEnergia.Controllers
                 return BadRequest(new { mensaje = "La contraseña actual no coincide." });
 
             usuario.PasswordHash = _passwordHasher.Hash(request.PasswordNueva);
+            usuario.DebeCambiarPassword = false;
             await _unitOfWork.SaveChangesAsync();
 
             return NoContent();

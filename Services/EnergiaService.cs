@@ -138,8 +138,11 @@ namespace ApiEnergia.Services
                 throw new ArgumentException("El mes debe estar entre 1 y 12.");
 
             var hoy = DateTime.UtcNow;
-            if (anio > hoy.Year || (anio == hoy.Year && mes > hoy.Month))
-                throw new InvalidOperationException("No se puede registrar una lectura en un periodo futuro.");
+            if (anio != hoy.Year || mes != hoy.Month)
+            {
+                throw new InvalidOperationException(
+                    $"Solo se puede registrar la lectura del mes en curso ({EtiquetaPeriodo(hoy.Year, hoy.Month)}).");
+            }
         }
 
         private async Task<bool> ExisteLecturaEnPeriodoAsync(string numeroContador, int anio, int mes)
@@ -486,6 +489,10 @@ namespace ApiEnergia.Services
 
             var saldoTotal = contadoresDto.Sum(c => c.SaldoPendiente);
 
+            var acceso = await _unitOfWork.Accesos
+                .FirstOrDefaultAsync(u => u.NombreUsuario == dpi && u.Rol == "CLIENTE");
+            var requiereCambio = acceso?.DebeCambiarPassword ?? false;
+
             return new MiCuentaResponseDto(
                 IdCliente: cliente.IdCliente,
                 Dpi: cliente.Dpi,
@@ -493,7 +500,8 @@ namespace ApiEnergia.Services
                 Apellido: cliente.Apellido,
                 Correo: cliente.Correo,
                 SaldoTotalPendiente: saldoTotal,
-                Contadores: contadoresDto);
+                Contadores: contadoresDto,
+                RequiereCambioPassword: requiereCambio);
         }
 
         public async Task<IReadOnlyList<ReciboResumenDto>> ListarRecibosPorDpiAsync(
